@@ -8,3 +8,5 @@ captures/*
 
 logs/*
 !logs/.gitkeep
+
+docs/build-log.md
