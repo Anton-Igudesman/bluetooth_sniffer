@@ -15,6 +15,10 @@ A Raspberry Pi-based field tool for passive BLE discovery, capture control, and 
 
 This project is being built incrementally. The first milestones cover hardware bring-up and a mock user interface before BLE capture support is added.
 
+## Documentation
+
+- [Architecture](docs/architecture.md)
+
 ## Safety and authorization
 
 This tool is intended for passive discovery and authorized testing of owned or permitted BLE devices.
