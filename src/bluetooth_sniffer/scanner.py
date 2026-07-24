@@ -1,14 +1,8 @@
-import asyncio
 from bleak import BleakScanner
 
 # Return types for discovery results
 from bleak.backends.device import BLEDevice # passed to connection
 from bleak.backends.scanner import AdvertisementData # RSSI/man. data
-
-
-
-NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-SCAN_DURATION_SECONDS = 10.0
 
 type ScanResults = dict[str, tuple[BLEDevice, AdvertisementData]]
 
@@ -17,8 +11,8 @@ class BluetoothScanner:
 
     def __init__(
         self,
+        duration_seconds: float,
         service_uuid: str | None = None,
-        duration_seconds: float = SCAN_DURATION_SECONDS,
     ) -> None:
         if duration_seconds <= 0:
             raise ValueError("Scan duration must be greater than zero.")
@@ -61,13 +55,3 @@ class BluetoothScanner:
             print(f"    RSSI: {advertisement.rssi} dBm")
             print(f"    Service UUIDs: {', '.join(advertisement.service_uuids)}")
             print(f"    Manufacturer data: {manufacturer_data or 'None'}")
-
-async def main() -> None:
-    scanner = BluetoothScanner(service_uuid=NUS_SERVICE_UUID)
-
-    print(f"Scanning for NUS devices for {SCAN_DURATION_SECONDS:.0f} seconds")
-    await scanner.scan()
-    scanner.print_scan_results()
-
-if __name__ == "__main__":
-    asyncio.run(main())
