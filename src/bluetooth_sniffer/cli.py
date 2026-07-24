@@ -52,5 +52,8 @@ async def main() -> None:
     await scanner.scan()
     scanner.print_scan_results()
 
-if __name__ == "__main__":
+def run() -> None:
     asyncio.run(main())
+
+if __name__ == "__main__":
+    run()

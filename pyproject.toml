@@ -15,3 +15,6 @@ authors = [
 dependencies = [
     "bleak==3.0.2"
 ]
+
+[project.scripts]
+bluetooth-sniffer = "bluetooth_sniffer.cli:run"
