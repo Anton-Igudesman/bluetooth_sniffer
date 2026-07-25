@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .profile_config.loader import load_profile
 from .scanner import BluetoothScanner
+from .reporting import write_scan_report
 
 DEFAULT_SCAN_DURATION_SECONDS = 10.0
 
@@ -25,6 +26,12 @@ def parse_arguments() -> argparse.Namespace:
         "--profile",
         type=Path,
         help="Optional path to a protocol profile TOML file",
+    )
+    
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path for a JSON scan report",
     )
 
     return parser.parse_args()
@@ -49,8 +56,13 @@ async def main() -> None:
 
     print(f"Scanning for {target} for {arguments.duration:g} seconds")
 
-    await scanner.scan()
+    results = await scanner.scan()
     scanner.print_scan_results()
+    
+    if arguments.output is not None:
+        # Save BLE scan report to location supplied with --output
+        write_scan_report(results, arguments.output)
+        print(f"Saved scan report to {arguments.output}")
 
 def run() -> None:
     asyncio.run(main())
