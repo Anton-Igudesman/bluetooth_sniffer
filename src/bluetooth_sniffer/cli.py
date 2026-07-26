@@ -251,6 +251,9 @@ async def main() -> None:
         # Remember connect completed so logs only real connection closure
         connection_opened = False
         
+        # Log capture completion only when nrfutil actually started
+        capture_started = False
+        
         try:
             if nordic_capture is not None:
                 # Start following fresh scanned address before connecting
@@ -260,6 +263,17 @@ async def main() -> None:
                 )
                 
                 await nordic_capture.start(device.address)
+                capture_started = True
+                
+                # Link application session to passive-capture file
+                event_logger.record(
+                    "capture.started",
+                    capture_type="nordic_ble",
+                    device_address=device.address,
+                    serial_port=nordic_capture.port,
+                    output_path=str(nordic_capture.output_path),
+                )
+                
                 print(f"Saving passive capture to {arguments.nordic_pcap}")
             await client.connect()
             connection_opened = True
@@ -334,6 +348,15 @@ async def main() -> None:
                     "connection.closed",
                     device_name=display_name,
                     device_address=device.address,
+                )
+                
+            if capture_started and nordic_capture is not None:
+                # Nordic processes exited and PCAP is readable
+                event_logger.record(
+                    "capture.completed",
+                    capture_type="nordic_ble",
+                    device_address=device.address,
+                    output_path=str(nordic_capture.output_path),
                 )
     
     event_logger.record("session.completed")
