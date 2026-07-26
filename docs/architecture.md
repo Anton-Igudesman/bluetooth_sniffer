@@ -61,9 +61,11 @@ The program must connect with the `BLEDevice` returned by the current scan.
 It must not copy a previously observed address into source code or assume that
 an address remains stable.
 
-Scanning without a profile lists available devices and their advertisement
-data. Selecting a profile may filter discovery or validate results using that
-profile's service UUIDs.
+Scanning lists available devices and their advertisement data without
+automatically filtering by the selected profile. A valid peripheral may omit
+its GATT service UUIDs from its advertisement, as the LightBlue NUS test
+device did. After connection, the selected profile validates the discovered
+GATT table and supplies the UUIDs used for protocol operations.
 
 ## UUIDs and GATT handles
 
@@ -123,7 +125,7 @@ capture layer.
 
 The active BLE path now supports:
 
-- generic or profile-filtered discovery through `BluetoothScanner`;
+- generic discovery through `BluetoothScanner`;
 - selectable protocol definitions loaded from TOML;
 - optional JSON reports containing portable advertisement data;
 - exact device matching against current addresses and reported names;
@@ -132,11 +134,15 @@ The active BLE path now supports:
 - validation of the selected profile against the connected GATT database;
 - explicit profile-driven RX writes with a selectable with-response or
   without-response mode;
+- profile-driven TX notification subscriptions with hexadecimal and optional
+  UTF-8 output;
 - GATT service, characteristic, property, and descriptor enumeration;
-- guaranteed disconnect after GATT inspection or write failure.
+- guaranteed disconnect after GATT inspection, writes, notification
+  subscriptions, or failures.
 
-The controlled iPhone test verified that the NUS profile can discover and
-connect to `Test BLE`. GATT enumeration found:
+The controlled LightBlue iPhone test verified that the NUS profile can connect
+to a virtual peripheral even when its advertisement omits the NUS service
+UUID. GATT enumeration found:
 
 - NUS RX `6e400002-b5a3-f393-e0a9-e50e24dcca9e`, supporting `write` and
   `write-without-response`;
@@ -144,15 +150,15 @@ connect to `Test BLE`. GATT enumeration found:
 - the TX Client Characteristic Configuration descriptor used to enable
   notifications.
 
-The iPhone test server rejected a write with response using ATT error
-`Invalid Handle`. A write without response successfully delivered the 13
-UTF-8 bytes for `hello from pi` to NUS RX. This verifies the application's
-active write path while preserving the distinction that a write without
-response has no protocol-level acknowledgement.
+The Pi successfully wrote the 13 UTF-8 bytes for `hello from pi` to NUS RX
+using a write with response. LightBlue then sent `68 69` through NUS TX, and
+the application received and decoded the notification as `hi`. These tests
+verify both active NUS data directions without treating the iPhone's changing
+BLE address or GATT handles as configuration.
 
 ## Next implementation steps
 
-1. Add notification subscription and capture.
-2. Record application-level GATT operations.
-3. Capture the Pi's HCI traffic with `btmon`.
-4. Add passive over-the-air capture through the Nordic PCA10059.
+1. Record application-level GATT operations.
+2. Capture the same controlled operations in the Pi's HCI traffic with
+   `btmon`.
+3. Add passive over-the-air capture through the Nordic PCA10059.
