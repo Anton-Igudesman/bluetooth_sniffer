@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 
 from .profile_config.loader import load_profile
+from .profile_config.model import ProtocolProfile
 from .scanner import BluetoothScanner
 from .reporting import write_scan_report
 from .gatt_client import GattClient
@@ -74,6 +75,7 @@ async def main() -> None:
     arguments = parse_arguments()
 
     # Start w/ generic scan settings
+    profile: ProtocolProfile | None = None
     service_uuid: str | None = None
     target = "all BLE advertisers"
 
@@ -109,6 +111,10 @@ async def main() -> None:
         try:
             await client.connect()
             print("Connected")
+            
+            if profile is not None:
+                client.validate_profile(profile)
+                print(f"Validated profile: {profile.name}")
             client.print_services()
         finally:
             # End GATT connection even if service inspection fails
