@@ -54,6 +54,46 @@ class GattClient:
                 f"{profile.name}: TX characteristic does not support notifications"
             )
             
+    async def write_rx(
+        self,
+        profile: ProtocolProfile,
+        data: bytes,
+    ) -> None:
+        if not self._client.is_connected:
+            raise RuntimeError("Cannot write while disconnected")
+        
+        # Locate RX within the profile's service
+        service = self._client.services.get_service(profile.service_uuid)
+        
+        if service is None:
+            raise ValueError(
+                f"{profile.name}: service {profile.service_uuid} was not found"
+            )
+            
+        characteristic = service.get_characteristic(profile.rx_uuid)
+        
+        if characteristic is None:
+            raise ValueError(
+                f"{profile.name}: RX characteristic {profile.rx_uuid} was not found"
+            )
+            
+        # Prefer a confirmed write when device supports both BLE write modes
+        if "write" in characteristic.properties:
+            response = True
+        elif "write-without-response" in characteristic.properties:
+            response = False
+        else:
+            raise ValueError(
+                f"{profile.name}: RX characteristic does not support writes"
+            )
+        
+        # Use characteristic discovered in connection including handle
+        await self._client.write_gatt_char(
+            characteristic,
+            data,
+            response=response,
+        )
+            
     def print_services(self) -> None:
         if not self._client.is_connected:
             raise RuntimeError("Cannot inspect GATT services while disconnected")

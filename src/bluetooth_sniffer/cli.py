@@ -42,8 +42,24 @@ def parse_arguments() -> argparse.Namespace:
         "--device", # str type by default
         help="Connect by exact name or current address from this scan"
     )
+    
+    parser.add_argument(
+        "--write",
+        metavar="TEXT",
+        help="UTF-8 text to write to selected profile's RX characteristic"
+    )
 
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    
+    # A write needs both profile's RX UUID and device to receive data
+    if arguments.write is not None:
+        if arguments.profile is None:
+            parser.error("--write requires a profile specified")
+            
+        if arguments.device is None:
+            parser.error("--write requires a device specified")
+            
+    return arguments
 
 def choose_device(devices: list[BLEDevice]) -> BLEDevice:
     # A single match can connect without asking user to choose
@@ -115,6 +131,13 @@ async def main() -> None:
             if profile is not None:
                 client.validate_profile(profile)
                 print(f"Validated profile: {profile.name}")
+                
+                if arguments.write is not None:
+                    # BLE characteristics xfer bytes, encode CLI text before sending
+                    payload = arguments.write.encode("utf-8")
+                    await client.write_rx(profile, payload)
+                    print(f"Wrote {len(payload)} bytes to {profile.name} RX")
+                    
             client.print_services()
         finally:
             # End GATT connection even if service inspection fails
