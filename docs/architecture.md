@@ -160,7 +160,9 @@ The active BLE path now supports:
 - passive Nordic PCAP capture of advertisements, connection establishment, and
   unencrypted ATT traffic for a selected current device address;
 - automatic Nordic process startup and cleanup through `NordicCapture`, using
-  explicit `--nordic-port` and `--nordic-pcap` runtime options.
+  explicit `--nordic-port` and `--nordic-pcap` runtime options;
+- JSONL `capture.started` and `capture.completed` records that link an
+  application session to its current device address, Nordic port, and PCAP.
 
 The controlled LightBlue iPhone test verified that the NUS profile can connect
 to a virtual peripheral even when its advertisement omits the NUS service
@@ -210,10 +212,15 @@ packets. Frame `485` contained notification bytes `68 69` on handle `0x0042`
 with RSSI `-35 dBm`. No nRF Util process remained after normal application
 completion.
 
+The capture lifecycle log was verified in a separate connection-only session.
+It recorded `capture.started`, `connection.opened`, `connection.closed`,
+`capture.completed`, and `session.completed` in order. The capture and
+connection records shared current address `53:26:7C:35:07:A2`, and the
+completed capture record named the finalized PCAP. No nRF Util process
+remained after the session.
+
 ## Next implementation steps
 
-1. Record passive-capture lifecycle and output-path details in the application
-   event log.
-2. Parse useful connection and ATT records from Nordic PCAP files.
-3. Correlate application JSONL, HCI, and passive PCAP records without relying
+1. Parse useful connection and ATT records from Nordic PCAP files.
+2. Correlate application JSONL, HCI, and passive PCAP records without relying
    on session-specific handles or human-readable characteristic labels.
