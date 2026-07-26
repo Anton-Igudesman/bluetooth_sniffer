@@ -82,6 +82,24 @@ During the controlled iPhone test, NUS RX had handle `26`, NUS TX had handle
 These values describe that discovered GATT database and must not become
 profile configuration.
 
+### ATT operations
+
+The Attribute Protocol (ATT) carries the individual messages used to access
+the GATT attribute table. An ATT operation identifies a current attribute
+handle and performs an action such as reading its value, writing bytes, or
+delivering a notification.
+
+The application normally calls higher-level Bleak GATT methods. Bleak and
+BlueZ translate those calls into ATT messages. For example:
+
+- writing NUS RX becomes an ATT write targeting its current handle;
+- subscribing to NUS TX configures its notification descriptor;
+- incoming NUS TX data arrives as an ATT notification containing the TX
+  handle and value.
+
+ATT handles and operation names will appear in HCI and over-the-air packet
+captures even though application configuration continues to use UUIDs.
+
 ## Radio roles
 
 The Raspberry Pi's built-in Bluetooth controller handles active operations:
