@@ -77,9 +77,10 @@ After connecting, the application finds the current characteristic by UUID
 and passes the resulting Bleak characteristic object to read, write, or
 notification operations.
 
-During the controlled iPhone test, NUS RX had handle `26`, NUS TX had handle
+During one controlled iPhone test, NUS RX had handle `26`, NUS TX had handle
 `29`, and the TX notification configuration descriptor had handle `31`.
-These values describe that discovered GATT database and must not become
+During a later test, those handles were `66`, `69`, and `71`. The changing
+values describe separate discovered GATT databases and must not become
 profile configuration.
 
 ### ATT operations
@@ -128,8 +129,11 @@ The active BLE path now supports:
 - exact device matching against current addresses and reported names;
 - numbered selection when a name matches multiple current scan results;
 - connection using the selected `BLEDevice`;
+- validation of the selected profile against the connected GATT database;
+- explicit profile-driven RX writes with a selectable with-response or
+  without-response mode;
 - GATT service, characteristic, property, and descriptor enumeration;
-- guaranteed disconnect after GATT inspection.
+- guaranteed disconnect after GATT inspection or write failure.
 
 The controlled iPhone test verified that the NUS profile can discover and
 connect to `Test BLE`. GATT enumeration found:
@@ -140,12 +144,15 @@ connect to `Test BLE`. GATT enumeration found:
 - the TX Client Characteristic Configuration descriptor used to enable
   notifications.
 
+The iPhone test server rejected a write with response using ATT error
+`Invalid Handle`. A write without response successfully delivered the 13
+UTF-8 bytes for `hello from pi` to NUS RX. This verifies the application's
+active write path while preserving the distinction that a write without
+response has no protocol-level acknowledgement.
+
 ## Next implementation steps
 
-1. Validate that a connected device contains the selected profile's service
-   and characteristics.
-2. Add profile-driven characteristic writes.
-3. Add notification subscription and capture.
-4. Record application-level GATT operations.
-5. Capture the Pi's HCI traffic with `btmon`.
-6. Add passive over-the-air capture through the Nordic PCA10059.
+1. Add notification subscription and capture.
+2. Record application-level GATT operations.
+3. Capture the Pi's HCI traffic with `btmon`.
+4. Add passive over-the-air capture through the Nordic PCA10059.

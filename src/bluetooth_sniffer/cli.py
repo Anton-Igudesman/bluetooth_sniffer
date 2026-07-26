@@ -7,7 +7,10 @@ from .profile_config.model import ProtocolProfile
 from .scanner import BluetoothScanner
 from .reporting import write_scan_report
 from .gatt_client import GattClient
+
 from bleak.backends.device import BLEDevice
+from bleak.backends.characteristic import BleakGATTCharacteristic
+
 from .selection import find_devices
 
 DEFAULT_SCAN_DURATION_SECONDS = 10.0
@@ -55,16 +58,31 @@ def parse_arguments() -> argparse.Namespace:
         default="with-response",
         help="BLE write mode (default: %(default)s)",
     )
+    
+    parser.add_argument(
+        "--listen",
+        type=float,
+        metavar="SECONDS",
+        help="Listen for TX notifications for the specified number of seconds",
+    )
 
     arguments = parser.parse_args()
     
     # A write needs both profile's RX UUID and device to receive data
-    if arguments.write is not None:
+    gatt_action_requested = (
+        arguments.write is not None or arguments.listen is not None
+    )
+    
+    # GATT writes and notifications need profile UUIDs and selected device
+    if gatt_action_requested:
         if arguments.profile is None:
-            parser.error("--write requires a profile specified")
+            parser.error("--write and --listen require a specified profile")
             
         if arguments.device is None:
-            parser.error("--write requires a device specified")
+            parser.error("--write and --listen require a specified device")
+            
+    if arguments.listen is not None and arguments.listen <= 0:
+        parser.error("--listen must be greater than zero")
             
     return arguments
 
@@ -93,7 +111,24 @@ def choose_device(devices: list[BLEDevice]) -> BLEDevice:
         
         print(f"Enter a number from 1 to {len(devices)}")
         
-
+def print_notification(
+    characteristic: BleakGATTCharacteristic,
+    data: bytearray,
+) -> None:
+    # Convert Bleak's callback into payload for display
+    payload = bytes(data)
+    
+    print(f"\nNotification from {characteristic.uuid}")
+    print(f"    Hex: {payload.hex(' ')}")
+    
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        # Hex preserves arbitrary binary data when no text representation exists
+        return
+    
+    print(f"    UTF-8: {text}")
+    
 async def main() -> None:
     arguments = parse_arguments()
 
@@ -154,7 +189,18 @@ async def main() -> None:
                         f" using {arguments.write_mode}"
                         )
                     
-                    
+                if arguments.listen is not None:
+                    print(
+                        f"Listening for {profile.name} TX notifications"
+                        f" for {arguments.listen:g} seconds"
+                    )
+                
+                    await client.listen_tx(
+                        profile,
+                        arguments.listen,
+                        print_notification,
+                    )
+                   
             client.print_services()
         finally:
             # End GATT connection even if service inspection fails
