@@ -10,5 +10,6 @@ logs/*
 !logs/.gitkeep
 
 docs/build-log.md
+*.egg-info/
 
 AGENTS.md
