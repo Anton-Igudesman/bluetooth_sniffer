@@ -139,8 +139,6 @@ async def main() -> None:
 
     if arguments.profile is not None:
         profile = load_profile(arguments.profile)
-        service_uuid = profile.service_uuid
-        target = profile.name
 
     # Pass scan settings only
     scanner = BluetoothScanner(
