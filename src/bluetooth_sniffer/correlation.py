@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID
@@ -8,12 +8,23 @@ from uuid import UUID
 from collections.abc import Iterator
 
 from .gatt_client import GattCharacteristicMapping
+from .pcap_analysis import AttPacket
 
 type GattEventType = Literal["gatt.write", "gatt.notification"]
 type JsonObject = dict[str, object]
 
 GATT_EVENT_TYPES = {"gatt.write", "gatt.notification"}
 GATT_MAPPING_EVENT_TYPE = "gatt.characteristic_mapped"
+
+# Fixed ATT operations prevent identical payloads from matching when
+# they belong to different kinds of BLE traffic
+ATT_OPCODES_BY_EVENT: dict[GattEventType, frozenset[int]] = {
+    "gatt.write": frozenset({0x12, 0x52}),
+    "gatt.notification": frozenset({0x1B, 0x1D}),
+}
+
+# Callers can widen this when capture latency or clock difference requires
+DEFAULT_CORRELATION_WINDOW = timedelta(seconds=2)
 
 @dataclass(frozen=True)
 class GattEvent:
@@ -44,7 +55,20 @@ def _field_error(
         line_number,
         f"{key} must be {requirement}"
     )
+
+@dataclass(frozen=True)
+class GattCorrelation:
+    event: GattEvent
+    mapping: GattCharacteristicMapping
+    packet: AttPacket | None
+    time_offset: timedelta | None
     
+    @property
+    def matched(self) -> bool:
+        # Keep unmatched events in report - give callers a way
+        # to cound which application actions appeared in the PCAP
+        return self.packet is not None
+   
 def _required_string(
     record: JsonObject,
     key: str,
@@ -286,4 +310,84 @@ def read_gatt_mappings(
                 ),
             )
         )
+        
     return mappings
+
+def correlate_gatt_events(
+    events: list[GattEvent],
+    mappings: list[GattCharacteristicMapping],
+    packets: list[AttPacket],
+    max_time_delta: timedelta = DEFAULT_CORRELATION_WINDOW,
+) -> list[GattCorrelation]:
+    if max_time_delta < timedelta(0):
+        raise ValueError("Correlation time window cannot be negative")
+    
+    mappings_by_uuid: dict[str, GattCharacteristicMapping] = {}
+    
+    for mapping in mappings:
+        existing = mappings_by_uuid.get(mapping.characteristic_uuid)
+        
+        # Two handles for one UUID makes packet selection unsafe
+        if existing is not None and existing != mapping:
+            raise ValueError(
+                f"Multiple ATT mappings exist for {mapping.characteristic_uuid}"
+            )
+            
+        mappings_by_uuid[mapping.characteristic_uuid] = mapping
+        
+    correlations: list[GattCorrelation] = []
+    used_frames: set[int] = set()
+    
+    # Process events chronologically - pair identical payloads w/ passive packets
+    for event in sorted(events, key=lambda item: item.timestamp):
+        mapping = mappings_by_uuid.get(event.characteristic_uuid)
+        
+        if mapping is None:
+            raise ValueError(
+                f"No ATT mapping exists for {event.characteristic_uuid}"
+            )
+            
+        expected_opcodes = ATT_OPCODES_BY_EVENT[event.event_type]
+        
+        candidates = [
+            packet
+            for packet in packets
+            if packet.frame_number not in used_frames
+            and packet.opcode in expected_opcodes
+            and packet.handle == mapping.value_handle
+            and packet.value == event.payload
+            and abs(packet.timestamp - event.timestamp) <= max_time_delta
+        ]
+        
+        if not candidates:
+            # Capture loss reporting application event
+            correlations.append(
+                GattCorrelation(
+                    event=event,
+                    mapping=mapping,
+                    packet=None,
+                    time_offset=None,
+                )
+            )
+            continue
+        
+        # Timestamp proximity chooses strongest candidate - then frame number
+        packet = min(
+            candidates,
+            key=lambda item: (
+                abs(item.timestamp - event.timestamp),
+                item.frame_number,
+            ),
+        )
+        used_frames.add(packet.frame_number)
+        
+        correlations.append(
+            GattCorrelation(
+                event=event,
+                mapping=mapping,
+                packet=packet,
+                time_offset=packet.timestamp - event.timestamp,
+            )
+        )
+        
+    return correlations
