@@ -294,7 +294,8 @@ async def main() -> None:
                     service_uuid=mapping.service_uuid,
                     service_handle=mapping.service_handle,
                     characteristic_uuid=mapping.characteristic_uuid,
-                    characteristic_handle=mapping.characteristic_handle,
+                    declaration_handle=mapping.declaration_handle,
+                    value_handle=mapping.value_handle,
                     properties=mapping.properties,
                 )
             

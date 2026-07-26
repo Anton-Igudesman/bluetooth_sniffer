@@ -22,7 +22,12 @@ class GattCharacteristicMapping:
     service_uuid: str
     service_handle: int
     characteristic_uuid: str
-    characteristic_handle: int
+    
+    # Keep the declaration handle as GATT context, but match Nordic
+    # ATT packets against value_handle - offset of 1
+    declaration_handle: int
+    value_handle: int
+    
     properties: tuple[str, ...]
 
 # Keep a connection w/ BleakClient alive across inspection/read/write
@@ -174,7 +179,8 @@ class GattClient:
                         service_uuid=service.uuid,
                         service_handle=service.handle,
                         characteristic_uuid=characteristic.uuid,
-                        characteristic_handle=characteristic.handle,
+                        declaration_handle=characteristic.handle,
+                        value_handle=characteristic.handle + 1,
                         properties=tuple(characteristic.properties),
                     )
                 )
