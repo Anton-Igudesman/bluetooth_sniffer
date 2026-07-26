@@ -1,6 +1,7 @@
 import asyncio
 import signal
 from pathlib import Path
+import os
 
 class NordicCapture:
     def __init__(self, port: str, output_path: Path) -> None:
@@ -31,6 +32,7 @@ class NordicCapture:
             str(self.output_path),
             "--follow",
             device_address,
+            start_new_session=True,
         )
         
         try:
@@ -66,15 +68,21 @@ class NordicCapture:
         
         try:
             if process.returncode is None:
-                # SIGINT matches Ctrl+C and lets nrfutil finish PCAP cleanly
-                process.send_signal(signal.SIGINT)
-                
+                # Match terminal Ctrl+C by signaling nrfutil and helper
+                try:
+                    os.killpg(process.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+            
             await asyncio.wait_for(process.wait(), timeout=5)
         except TimeoutError:
-            # Do not leave a failed capture process running after BLE session
-            process.terminate()
+            # Terminate the entire capture group if graceful shutdown stalls
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            
             await process.wait()
-        
         finally:
             self._process = None
             
