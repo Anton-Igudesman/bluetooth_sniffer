@@ -8,6 +8,7 @@ from .scanner import BluetoothScanner
 from .reporting import write_scan_report
 from .gatt_client import GattClient
 from .event_log import EventLogger
+from .nordic_capture import NordicCapture
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -72,6 +73,17 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Optional path for timestamped JSONL application events",
     )
+    
+    parser.add_argument(
+        "--nordic-port",
+        help="Serial port for the Nordic BLE sniffer",
+    )
+    
+    parser.add_argument(
+        "--nordic-pcap",
+        type=Path,
+        help="Output path for the Nordic passive PCAP capture",
+    )
 
     arguments = parser.parse_args()
     
@@ -90,6 +102,22 @@ def parse_arguments() -> argparse.Namespace:
             
     if arguments.listen is not None and arguments.listen <= 0:
         parser.error("--listen must be greater than zero")
+        
+    nordic_capture_requested = (
+        arguments.nordic_port is not None
+        or arguments.nordic_pcap is not None
+    )
+    
+    if nordic_capture_requested:
+        if arguments.nordic_port is None:
+            parser.error("--nordic-pcap requires a specified port")
+            
+        if arguments.nordic_pcap is None:
+            parser.error("--nordic-port requires specified pcap file")
+            
+        # Connection following needs address selected from current session scan
+        if arguments.device is None:
+            parser.error("Nordic capture requires --device")
             
     return arguments
 
@@ -135,7 +163,18 @@ def print_notification(
         return
     
     print(f"    UTF-8: {text}")
-    
+
+async def disconnect_and_stop_capture(
+    client: GattClient,
+    nordic_capture: NordicCapture | None,
+) -> None:
+    try:
+        await client.disconnect()
+    finally:
+        if nordic_capture is not None:
+            # Keep recording through disconnect, then finalize PCAP
+            await nordic_capture.stop()
+            
 async def main() -> None:
     arguments = parse_arguments()
     event_logger = EventLogger(arguments.event_log)
@@ -196,12 +235,32 @@ async def main() -> None:
         client = GattClient(device)
         display_name = device.name or "Unknown"
         
+        nordic_capture = (
+            NordicCapture(
+                arguments.nordic_port,
+                arguments.nordic_pcap,
+            )
+            
+            if arguments.nordic_port is not None
+            and arguments.nordic_pcap is not None
+            else None
+        )
+        
         print(f"\nConnecting to {display_name} ({device.address})")
 
         # Remember connect completed so logs only real connection closure
         connection_opened = False
         
         try:
+            if nordic_capture is not None:
+                # Start following fresh scanned address before connecting
+                print(
+                    f"Starting Nordic capture on {arguments.nordic_port}"
+                    f" for {device.address}"
+                )
+                
+                await nordic_capture.start(device.address)
+                print(f"Saving passive capture to {arguments.nordic_pcap}")
             await client.connect()
             connection_opened = True
             
@@ -267,8 +326,8 @@ async def main() -> None:
             )
             raise
         finally:
-            # End GATT connection even if service inspection fails
-            await client.disconnect()
+            # Disconnect BLE before stopping Nordic so PCAP includees connection closure
+            await disconnect_and_stop_capture(client, nordic_capture)
             
             if connection_opened:
                 event_logger.record(
