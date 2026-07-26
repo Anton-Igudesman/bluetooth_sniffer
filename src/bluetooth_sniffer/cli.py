@@ -7,6 +7,7 @@ from .profile_config.model import ProtocolProfile
 from .scanner import BluetoothScanner
 from .reporting import write_scan_report
 from .gatt_client import GattClient
+from .event_log import EventLogger
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -64,6 +65,12 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         metavar="SECONDS",
         help="Listen for TX notifications for the specified number of seconds",
+    )
+    
+    parser.add_argument(
+        "--event-log",
+        type=Path,
+        help="Optional path for timestamped JSONL application events",
     )
 
     arguments = parser.parse_args()
@@ -131,6 +138,28 @@ def print_notification(
     
 async def main() -> None:
     arguments = parse_arguments()
+    event_logger = EventLogger(arguments.event_log)
+    
+    event_logger.record(
+        "session.started",
+        scan_duration_seconds=arguments.duration,
+    )
+    
+    def handle_notification(
+        characteristic: BleakGATTCharacteristic,
+        data: bytearray,
+    ) -> None:
+        payload = bytes(data)
+        
+        # Notification feeds both session log and terminal display
+        event_logger.record(
+            "gatt.notification",
+            characteristic_uuid=characteristic.uuid,
+            payload_hex=payload.hex(" "),
+            payload_size_bytes=len(payload),
+        )
+        
+        print_notification(characteristic, data)
 
     # Start w/ generic scan settings
     profile: ProtocolProfile | None = None
@@ -149,6 +178,11 @@ async def main() -> None:
     print(f"Scanning for {target} for {arguments.duration:g} seconds")
 
     results = await scanner.scan()
+    event_logger.record(
+        "scan.completed",
+        device_count=len(results),
+    )
+    
     scanner.print_scan_results()
     
     if arguments.output is not None:
@@ -166,10 +200,20 @@ async def main() -> None:
     
         try:
             await client.connect()
+            event_logger.record(
+                "connection.opened",
+                device_name=display_name,
+                device_address=device.address,
+            )
             print("Connected")
             
             if profile is not None:
                 client.validate_profile(profile)
+                event_logger.record(
+                    "profile.validated",
+                    profile_name=profile.name,
+                    service_uuid=profile.service_uuid,
+                )
                 print(f"Validated profile: {profile.name}")
                 
                 if arguments.write is not None:
@@ -186,6 +230,14 @@ async def main() -> None:
                         f"Sent {len(payload)} bytes to {profile.name} RX"
                         f" using {arguments.write_mode}"
                         )
+                    event_logger.record(
+                        "gatt.write",
+                        profile_name=profile.name,
+                        characteristic_uuid=profile.rx_uuid,
+                        payload_hex=payload.hex(" "),
+                        payload_size_bytes=len(payload),
+                        write_mode=arguments.write_mode,
+                    )
                     
                 if arguments.listen is not None:
                     print(
@@ -196,7 +248,7 @@ async def main() -> None:
                     await client.listen_tx(
                         profile,
                         arguments.listen,
-                        print_notification,
+                        handle_notification,
                     )
                    
             client.print_services()
