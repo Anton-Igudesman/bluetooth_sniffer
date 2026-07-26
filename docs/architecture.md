@@ -158,7 +158,9 @@ The active BLE path now supports:
 - guaranteed disconnect after GATT inspection, writes, notification
   subscriptions, or failures;
 - passive Nordic PCAP capture of advertisements, connection establishment, and
-  unencrypted ATT traffic for a selected current device address.
+  unencrypted ATT traffic for a selected current device address;
+- automatic Nordic process startup and cleanup through `NordicCapture`, using
+  explicit `--nordic-port` and `--nordic-pcap` runtime options.
 
 The controlled LightBlue iPhone test verified that the NUS profile can connect
 to a virtual peripheral even when its advertisement omits the NUS service
@@ -195,10 +197,23 @@ ATT Handle Value Notification (`0x1b`) on handle `0x0042`, with an RSSI of
 session-specific observations; the UUID, operation direction, and payload
 establish the protocol identity.
 
+The automated capture path was then verified without a second terminal.
+`NordicCapture` received the selected `BLEDevice.address`, started exact-address
+following before the GATT connection, and kept the capture active through
+disconnect. Because nRF Util launches both a wrapper and a
+`nrfutil-ble-sniffer` helper, the capture starts in a separate process group.
+Cleanup signals the entire group so both processes exit and the PCAP closes
+normally.
+
+The resulting automated PCAP contained 1,399 packets and 85 decoded ATT
+packets. Frame `485` contained notification bytes `68 69` on handle `0x0042`
+with RSSI `-35 dBm`. No nRF Util process remained after normal application
+completion.
+
 ## Next implementation steps
 
-1. Wrap the verified Nordic capture procedure in a reusable application or
-   script boundary.
-2. Resolve and pass the selected device's current address to the capture
-   process without storing it as configuration.
-3. Parse and correlate application JSONL, HCI, and passive PCAP records.
+1. Record passive-capture lifecycle and output-path details in the application
+   event log.
+2. Parse useful connection and ATT records from Nordic PCAP files.
+3. Correlate application JSONL, HCI, and passive PCAP records without relying
+   on session-specific handles or human-readable characteristic labels.
