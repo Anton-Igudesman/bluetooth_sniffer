@@ -58,6 +58,8 @@ class GattClient:
         self,
         profile: ProtocolProfile,
         data: bytes,
+        *, # with response must be named
+        with_response: bool,
     ) -> None:
         if not self._client.is_connected:
             raise RuntimeError("Cannot write while disconnected")
@@ -77,21 +79,22 @@ class GattClient:
                 f"{profile.name}: RX characteristic {profile.rx_uuid} was not found"
             )
             
-        # Prefer a confirmed write when device supports both BLE write modes
-        if "write" in characteristic.properties:
-            response = True
-        elif "write-without-response" in characteristic.properties:
-            response = False
-        else:
+        # Bleak calls with-response property "write"
+        required_property = (
+            "write" if with_response else "write-without-response"
+        )
+        
+        if required_property not in characteristic.properties:
             raise ValueError(
-                f"{profile.name}: RX characteristic does not support writes"
+                f"{profile.name}: RX characteristic does not support"
+                f" {required_property}"
             )
         
         # Use characteristic discovered in connection including handle
         await self._client.write_gatt_char(
             characteristic,
             data,
-            response=response,
+            response=with_response,
         )
             
     def print_services(self) -> None:

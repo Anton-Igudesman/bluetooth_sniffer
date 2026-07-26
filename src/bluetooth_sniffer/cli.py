@@ -48,6 +48,13 @@ def parse_arguments() -> argparse.Namespace:
         metavar="TEXT",
         help="UTF-8 text to write to selected profile's RX characteristic"
     )
+    
+    parser.add_argument(
+        "--write-mode",
+        choices=("with-response", "without-response"),
+        default="with-response",
+        help="BLE write mode (default: %(default)s)",
+    )
 
     arguments = parser.parse_args()
     
@@ -135,8 +142,18 @@ async def main() -> None:
                 if arguments.write is not None:
                     # BLE characteristics xfer bytes, encode CLI text before sending
                     payload = arguments.write.encode("utf-8")
-                    await client.write_rx(profile, payload)
-                    print(f"Wrote {len(payload)} bytes to {profile.name} RX")
+                    with_response = arguments.write_mode == "with-response"
+                    
+                    await client.write_rx(
+                        profile, 
+                        payload,
+                        with_response=with_response,
+                        )
+                    print(
+                        f"Sent {len(payload)} bytes to {profile.name} RX"
+                        f" using {arguments.write_mode}"
+                        )
+                    
                     
             client.print_services()
         finally:
