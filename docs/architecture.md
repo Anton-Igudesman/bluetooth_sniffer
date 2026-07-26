@@ -103,6 +103,13 @@ BlueZ translate those calls into ATT messages. For example:
 ATT handles and operation names will appear in HCI and over-the-air packet
 captures even though application configuration continues to use UUIDs.
 
+Human-readable characteristic descriptions produced by tools are not
+authoritative. In one verified `btmon` capture, BlueZ described NUS UUID
+`...0002` as "Nordic UART TX" and `...0003` as "Nordic UART RX", the reverse
+of the roles defined by the NUS profile. Correlation must use the complete
+UUID, ATT operation direction, handle, and payload rather than the description
+alone.
+
 ## Radio roles
 
 The Raspberry Pi's built-in Bluetooth controller handles active operations:
@@ -159,10 +166,19 @@ the application received and decoded the notification as `hi`. These tests
 verify both active NUS data directions without treating the iPhone's changing
 BLE address or GATT handles as configuration.
 
+A later paired application/HCI capture verified the same operations at the
+ATT layer:
+
+- an ATT Write Request sent 17 bytes for `hci write from pi` to NUS UUID
+  `...0002` at handle `0x001e`, followed by an ATT Write Response;
+- an ATT Handle Value Notification delivered `68 69` from NUS UUID `...0003`
+  at handle `0x001b`;
+- an ATT Write Request sent `0000` to handle `0x001c` when
+  `stop_notify()` disabled the TX Client Characteristic Configuration
+  descriptor at the end of the listening interval.
+
 ## Next implementation steps
 
-1. Capture the same controlled operations in the Pi's HCI traffic with
-   `btmon`.
-2. Correlate application events with HCI/ATT records by timestamp and UUID.
-3. Record failed operations and completed session/connection lifecycle events.
-4. Add passive over-the-air capture through the Nordic PCA10059.
+1. Record failed operations and completed session/connection lifecycle events.
+2. Add passive over-the-air capture through the Nordic PCA10059.
+3. Correlate application, HCI, and passive over-the-air records.
