@@ -13,7 +13,11 @@ A Raspberry Pi-based field tool for passive BLE discovery, capture control, and 
 
 ## Project status
 
-This project is being built incrementally. The first milestones cover hardware bring-up and a mock user interface before BLE capture support is added.
+The project currently supports generic BLE discovery, selectable protocol
+profiles, JSON advertisement reports, current-scan device selection, BLE
+connection, and GATT enumeration. The next milestone adds profile-driven
+writes, notification subscriptions, and operation logging. Passive Nordic
+capture and the Waveshare interface remain later milestones.
 
 ## Documentation
 

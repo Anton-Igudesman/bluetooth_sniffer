@@ -65,6 +65,23 @@ Scanning without a profile lists available devices and their advertisement
 data. Selecting a profile may filter discovery or validate results using that
 profile's service UUIDs.
 
+## UUIDs and GATT handles
+
+A UUID identifies the purpose of a service, characteristic, or descriptor.
+A handle identifies one entry in the connected device's current GATT
+attribute table. Handles are used in ATT traffic and packet captures, but
+they can change when the peripheral rebuilds or reorders its GATT database.
+
+Protocol profiles therefore store stable UUIDs rather than observed handles.
+After connecting, the application finds the current characteristic by UUID
+and passes the resulting Bleak characteristic object to read, write, or
+notification operations.
+
+During the controlled iPhone test, NUS RX had handle `26`, NUS TX had handle
+`29`, and the TX notification configuration descriptor had handle `31`.
+These values describe that discovered GATT database and must not become
+profile configuration.
+
 ## Radio roles
 
 The Raspberry Pi's built-in Bluetooth controller handles active operations:
@@ -83,15 +100,34 @@ These are independent data sources. Passive packets, local HCI events, and
 application-level operations must not be presented as if they were the same
 capture layer.
 
-## Current implementation gap
+## Current implementation
 
-`BluetoothScanner` already accepts an optional service UUID and stores the
-`BLEDevice` objects returned by Bleak. However, the current `main()` function
-always selects the module-level NUS UUID.
+The active BLE path now supports:
 
-Before connection code is added:
+- generic or profile-filtered discovery through `BluetoothScanner`;
+- selectable protocol definitions loaded from TOML;
+- optional JSON reports containing portable advertisement data;
+- exact device matching against current addresses and reported names;
+- numbered selection when a name matches multiple current scan results;
+- connection using the selected `BLEDevice`;
+- GATT service, characteristic, property, and descriptor enumeration;
+- guaranteed disconnect after GATT inspection.
 
-1. Remove the forced NUS selection from `main()`.
-2. Accept scan settings at runtime.
-3. Add loadable protocol profiles.
-4. Keep the scanner usable without any selected profile.
+The controlled iPhone test verified that the NUS profile can discover and
+connect to `Test BLE`. GATT enumeration found:
+
+- NUS RX `6e400002-b5a3-f393-e0a9-e50e24dcca9e`, supporting `write` and
+  `write-without-response`;
+- NUS TX `6e400003-b5a3-f393-e0a9-e50e24dcca9e`, supporting `notify`;
+- the TX Client Characteristic Configuration descriptor used to enable
+  notifications.
+
+## Next implementation steps
+
+1. Validate that a connected device contains the selected profile's service
+   and characteristics.
+2. Add profile-driven characteristic writes.
+3. Add notification subscription and capture.
+4. Record application-level GATT operations.
+5. Capture the Pi's HCI traffic with `btmon`.
+6. Add passive over-the-air capture through the Nordic PCA10059.
