@@ -5,6 +5,9 @@ from pathlib import Path
 from .profile_config.loader import load_profile
 from .scanner import BluetoothScanner
 from .reporting import write_scan_report
+from .gatt_client import GattClient
+from bleak.backends.device import BLEDevice
+from .selection import find_devices
 
 DEFAULT_SCAN_DURATION_SECONDS = 10.0
 
@@ -33,8 +36,39 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Optional path for a JSON scan report",
     )
+    
+    parser.add_argument(
+        "--device", # str type by default
+        help="Connect by exact name or current address from this scan"
+    )
 
     return parser.parse_args()
+
+def choose_device(devices: list[BLEDevice]) -> BLEDevice:
+    # A single match can connect without asking user to choose
+    if len(devices) == 1:
+        return devices[0]
+    
+    # Number only device that match value supplied with --device
+    print("\nMultiple devices matched:")
+    
+    for number, device in enumerate(devices, start=1):
+        display_name = device.name or "Unknown"
+        print(f"    {number}. {display_name} ({device.address})")
+        
+    while True:
+        choice = input("Select device number: ").strip()
+        
+        if choice.isdecimal():
+            number = int(choice)
+            
+            # Clamp values
+            if 1 <= number <= len(devices):
+                # Convert displayed number to zero indexed list
+                return devices[number - 1]
+        
+        print(f"Enter a number from 1 to {len(devices)}")
+        
 
 async def main() -> None:
     arguments = parse_arguments()
@@ -63,6 +97,22 @@ async def main() -> None:
         # Save BLE scan report to location supplied with --output
         write_scan_report(results, arguments.output)
         print(f"Saved scan report to {arguments.output}")
+        
+    if arguments.device is not None:
+        matching_devices = find_devices(results, arguments.device)
+        device = choose_device(matching_devices)
+        client = GattClient(device)
+        display_name = device.name or "Unknown"
+        
+        print(f"\nConnecting to {display_name} ({device.address})")
+    
+        try:
+            await client.connect()
+            print("Connected")
+            client.print_services()
+        finally:
+            # End GATT connection even if service inspection fails
+            await client.disconnect()
 
 def run() -> None:
     asyncio.run(main())
