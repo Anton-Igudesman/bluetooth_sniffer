@@ -2,7 +2,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-type EventValue = str | int | float | bool | None
+type EventValue = str | int | float | bool | None | tuple[str, ...]
 
 class EventLogger:
     def __init__(self, output_path: Path | None) -> None:

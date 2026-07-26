@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
@@ -11,6 +12,18 @@ type NotificationHandler = Callable[
     [BleakGATTCharacteristic, bytearray],
     None,
 ]
+
+"""
+    Links each characteristic UUID to the temp ATT handle used during
+    the same connection, allows Nordic packets to identify the correct characteristic
+"""
+@dataclass(frozen=True)
+class GattCharacteristicMapping:
+    service_uuid: str
+    service_handle: int
+    characteristic_uuid: str
+    characteristic_handle: int
+    properties: tuple[str, ...]
 
 # Keep a connection w/ BleakClient alive across inspection/read/write
 class GattClient:
@@ -142,7 +155,32 @@ class GattClient:
         finally:
             # Remove TX subscription before the outer connection cleanup runs
             await self._client.stop_notify(characteristic)
-            
+    
+    def characteristic_mappings(
+        self,
+    ) -> list[GattCharacteristicMapping]:
+        self._require_connected("inspect GATT mappings")
+        
+        mappings: list[GattCharacteristicMapping] = []
+        
+        """
+            Handles belong to current peripheral db
+            Capture new UUID-to-handle for every connection
+        """
+        for service in self._client.services:
+            for characteristic in service.characteristics:
+                mappings.append(
+                    GattCharacteristicMapping(
+                        service_uuid=service.uuid,
+                        service_handle=service.handle,
+                        characteristic_uuid=characteristic.uuid,
+                        characteristic_handle=characteristic.handle,
+                        properties=tuple(characteristic.properties),
+                    )
+                )
+                
+        return mappings
+           
     def print_services(self) -> None:
         self._require_connected("inspect GATT services")
         

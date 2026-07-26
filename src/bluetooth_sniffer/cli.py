@@ -285,6 +285,19 @@ async def main() -> None:
             )
             print("Connected")
             
+            # Record current UUID-to-handle bridge so passive ATT handles
+            # are linked back to characteristics during analysis
+            for mapping in client.characteristic_mappings():
+                event_logger.record(
+                    "gatt.characteristic_mapped",
+                    device_address=device.address,
+                    service_uuid=mapping.service_uuid,
+                    service_handle=mapping.service_handle,
+                    characteristic_uuid=mapping.characteristic_uuid,
+                    characteristic_handle=mapping.characteristic_handle,
+                    properties=mapping.properties,
+                )
+            
             if profile is not None:
                 client.validate_profile(profile)
                 event_logger.record(
