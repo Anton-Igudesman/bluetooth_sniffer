@@ -136,6 +136,9 @@ The active BLE path now supports:
   without-response mode;
 - profile-driven TX notification subscriptions with hexadecimal and optional
   UTF-8 output;
+- optional JSONL event logs containing UTC timestamps and portable details for
+  completed scans, connections, profile validation, RX writes, and TX
+  notifications;
 - GATT service, characteristic, property, and descriptor enumeration;
 - guaranteed disconnect after GATT inspection, writes, notification
   subscriptions, or failures.
@@ -158,7 +161,8 @@ BLE address or GATT handles as configuration.
 
 ## Next implementation steps
 
-1. Record application-level GATT operations.
-2. Capture the same controlled operations in the Pi's HCI traffic with
+1. Capture the same controlled operations in the Pi's HCI traffic with
    `btmon`.
-3. Add passive over-the-air capture through the Nordic PCA10059.
+2. Correlate application events with HCI/ATT records by timestamp and UUID.
+3. Record failed operations and completed session/connection lifecycle events.
+4. Add passive over-the-air capture through the Nordic PCA10059.
