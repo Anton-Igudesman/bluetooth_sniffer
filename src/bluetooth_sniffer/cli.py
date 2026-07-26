@@ -197,9 +197,14 @@ async def main() -> None:
         display_name = device.name or "Unknown"
         
         print(f"\nConnecting to {display_name} ({device.address})")
-    
+
+        # Remember connect completed so logs only real connection closure
+        connection_opened = False
+        
         try:
             await client.connect()
+            connection_opened = True
+            
             event_logger.record(
                 "connection.opened",
                 device_name=display_name,
@@ -252,9 +257,27 @@ async def main() -> None:
                     )
                    
             client.print_services()
+            
+        except Exception as error:
+            # Preserve the original traceback after recording failed session
+            event_logger.record(
+                "session.failed",
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
+            raise
         finally:
             # End GATT connection even if service inspection fails
             await client.disconnect()
+            
+            if connection_opened:
+                event_logger.record(
+                    "connection.closed",
+                    device_name=display_name,
+                    device_address=device.address,
+                )
+    
+    event_logger.record("session.completed")
 
 def run() -> None:
     asyncio.run(main())
