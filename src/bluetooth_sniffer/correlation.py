@@ -322,6 +322,9 @@ def correlate_gatt_events(
     if max_time_delta < timedelta(0):
         raise ValueError("Correlation time window cannot be negative")
     
+    if events and not packets:
+        raise ValueError("Passive capture contains no decoded ATT packets for logged GATT events")
+    
     mappings_by_uuid: dict[str, GattCharacteristicMapping] = {}
     
     for mapping in mappings:
