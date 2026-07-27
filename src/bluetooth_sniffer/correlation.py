@@ -8,7 +8,11 @@ from uuid import UUID
 from collections.abc import Iterator
 
 from .gatt_client import GattCharacteristicMapping
-from .pcap_analysis import AttPacket
+from .pcap_analysis import (
+    ATT_NOTIFICATION_OPCODES,
+    ATT_WRITE_OPCODES,
+    AttPacket,
+)
 
 type GattEventType = Literal["gatt.write", "gatt.notification"]
 type JsonObject = dict[str, object]
@@ -19,8 +23,8 @@ GATT_MAPPING_EVENT_TYPE = "gatt.characteristic_mapped"
 # Fixed ATT operations prevent identical payloads from matching when
 # they belong to different kinds of BLE traffic
 ATT_OPCODES_BY_EVENT: dict[GattEventType, frozenset[int]] = {
-    "gatt.write": frozenset({0x12, 0x52}),
-    "gatt.notification": frozenset({0x1B, 0x1D}),
+    "gatt.write": ATT_WRITE_OPCODES,
+    "gatt.notification": ATT_NOTIFICATION_OPCODES,
 }
 
 # Callers can widen this when capture latency or clock difference requires

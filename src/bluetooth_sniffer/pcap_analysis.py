@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 from typing import cast
 
+ATT_WRITE_OPCODES = frozenset({0x12, 0x52})
+ATT_NOTIFICATION_OPCODES = frozenset({0x1B, 0x1D})
+ATT_VALUE_OPCODES = ATT_WRITE_OPCODES | ATT_NOTIFICATION_OPCODES
+
 @dataclass(frozen=True)
 class AttPacket:
     frame_number: int
@@ -53,6 +57,34 @@ def _optional_string(data: JsonObject, key: str) -> str | None:
     
     return value
 
+def _att_value_from_raw(
+    layers: JsonObject,
+    opcode: int,
+) -> bytes | None:
+    if opcode not in ATT_VALUE_OPCODES:
+        return None
+
+    raw_field = layers.get("btatt_raw")
+
+    if (
+        not isinstance(raw_field, list)
+        or not raw_field
+        or not isinstance(raw_field[0], str)
+    ):
+        raise ValueError("TShark packet is missing its raw ATT PDU")
+
+    try:
+        pdu = bytes.fromhex(raw_field[0])
+    except ValueError as error:
+        raise ValueError("TShark returned invalid raw ATT bytes") from error
+
+    if len(pdu) < 3 or pdu[0] != opcode:
+        raise ValueError("Raw ATT PDU does not match its decoded opcode")
+
+    # Wireshark can replace btatt.value with a profile-specific field.
+    # Bytes after the opcode and two-byte handle remain the original payload.
+    return pdu[3:]
+
 def _packet_from_tshark(document: JsonObject) -> AttPacket:
     source = _required_object(document, "_source")
     layers = _required_object(source, "layers")
@@ -64,7 +96,11 @@ def _packet_from_tshark(document: JsonObject) -> AttPacket:
     flags = _required_object(nordic, "nordic_ble.flags_tree")
     
     handle_text = _optional_string(att, "btatt.handle")
-    value_text = _optional_string(att, "btatt.value")
+    opcode = int(
+        _required_string(att, "btatt.opcode"),
+        base=0,
+    )
+    value = _att_value_from_raw(layers, opcode)
     
     handle_tree = att.get("btatt.handle_tree")
     service_uuid_text: str | None = None
@@ -98,18 +134,9 @@ def _packet_from_tshark(document: JsonObject) -> AttPacket:
         encrypted=(
             _required_string(flags, "nordic_ble.encrypted") == "1"
         ),
-        opcode=int(
-            _required_string(att, "btatt.opcode"),
-            base=0,
-        ),
+        opcode=opcode,
         handle=int(handle_text, base=0) if handle_text is not None else None,
-        
-        # Convert Wireshark hex represenation to bytes
-        value=(
-            bytes.fromhex(value_text.replace(":", " "))
-            if value_text is not None
-            else None
-        ),
+        value=value,
         service_uuid=(
             str(UUID(hex=service_uuid_text.replace(":", "")))
             if service_uuid_text is not None
@@ -130,6 +157,7 @@ async def read_att_packets(path: Path) -> list[AttPacket]:
         "btatt",
         "-T",
         "json",
+        "-x",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
