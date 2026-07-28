@@ -47,3 +47,47 @@ typing without giving callers a reliable way to distinguish these failures.
 - Tests demonstrate that distinct error messages keep the relevant device,
   profile, path, or operation context.
 - No helper is introduced solely to shorten `raise RuntimeError(...)`.
+
+## Automated correlation tests
+
+### Current decision
+
+Defer the automated test suite until after the DEFCON MVP display workflow is
+operational. The current correlation implementation is backed by retained
+JSONL, Nordic PCAP, and structured-report artifacts from a verified automatic
+session that produced `2/2` matches.
+
+### Reason to revisit
+
+The correlation engine now makes several decisions that should remain stable
+as the application evolves:
+
+- matching writes and notifications by ATT operation, value handle, payload,
+  and timestamp;
+- preserving an ordinary unmatched event when other ATT packets exist;
+- rejecting a passive capture containing no decoded ATT packets;
+- parsing payload bytes when Wireshark replaces `btatt.value` with a
+  profile-specific field;
+- keeping repeated identical payloads associated with separate packet frames.
+
+Manual hardware sessions verify the complete system but are too variable and
+slow to run as regression checks after every code change.
+
+### Proposed work
+
+- Add pytest as an optional development dependency rather than a deployed
+  runtime dependency.
+- Add deterministic in-memory tests for matched, unmatched, duplicate-payload,
+  and unusable-capture correlation.
+- Add parser fixtures representing generic `btatt.value` and
+  profile-specific raw ATT payloads.
+- Keep hardware capture checks as separate integration tests that are not
+  required for every local test run.
+
+### Completion criteria
+
+- Tests run without Bluetooth hardware, LightBlue, Nordic capture, or live
+  TShark input.
+- Matched, unmatched, and unusable-capture decisions are covered.
+- A regression in UUID-to-value-handle matching or raw ATT payload extraction
+  fails deterministically.

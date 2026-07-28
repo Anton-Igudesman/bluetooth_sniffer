@@ -171,7 +171,12 @@ The active BLE path now supports:
   using operation type, value handle, payload, and timestamp;
 - offline correlation through `bluetooth-sniffer-analyze`, including separate
   reporting of matched events, ordinary unmatched events, and captures with
-  no decoded ATT traffic.
+  no decoded ATT traffic;
+- structured JSON correlation reports containing source paths, match counts,
+  application events, UUID-to-handle mappings, passive packet evidence, and
+  event-to-packet time offsets;
+- optional automatic correlation after a successful live session through
+  `--correlation-output`, after the event log and Nordic PCAP are finalized.
 
 The controlled LightBlue iPhone test verified that the NUS profile can connect
 to a virtual peripheral even when its advertisement omits the NUS service
@@ -257,9 +262,22 @@ value handle `0x0045`. The analyzer matched the 18-byte `process group test`
 write to frame `201` at `-25 dBm` and notification bytes `68 69` to frame
 `485` at `-35 dBm`, producing `2/2`.
 
+A fresh production-style session then verified the complete automatic path.
+The regular `bluetooth-sniffer` command wrote `automatic correlation retry`,
+received notification bytes `68 69`, finalized its capture, analyzed the
+session, and saved a structured report without invoking the offline analyzer
+separately. The write and notification both matched passive packets, producing
+`2/2`. The lifecycle log recorded `capture.completed`, `session.completed`,
+and `analysis.completed` in order, and no nRF Util process remained.
+
+A preceding attempt also verified the capture-loss boundary. The Nordic PCAP
+contained strong advertisements from the selected address on all three primary
+advertising channels but no connection request or ATT packets. The application
+did not repeat its successful live write. Analysis treated the PCAP as
+unusable, allowing the runtime to report an explicit analysis failure instead
+of presenting missing passive evidence as ordinary unmatched traffic.
+
 ## Next implementation steps
 
-1. Produce a structured correlation report for the future display and saved
-   evidence workflow.
-2. Add repeatable analysis tests for matched packets, capture loss, and a
-   Nordic capture that missed the connection handoff.
+1. Build the display-facing workflow on the structured correlation report.
+2. Return to the deferred automated correlation tests during stabilization.
