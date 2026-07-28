@@ -398,10 +398,23 @@ async def main() -> None:
     if arguments.correlation_output is not None:
         # Nordic capture has stopped and session.completed is writted,
         # Analysis cannot read partially written PCAP or event log
-        correlations = await analyze_session(
-            arguments.event_log,
-            arguments.nordic_pcap,
-        )
+        try:
+            correlations = await analyze_session(
+                arguments.event_log,
+                arguments.nordic_pcap,
+            )
+            
+        except ValueError as error:
+            # A missed connection handoff makes passive scan unusable,
+            # but completed BLE write must not be repeated
+            event_logger.record(
+                "analysis.failed",
+                error_type=type(error).__name__,
+                error_message=str(error),
+                pcap_path=str(arguments.nordic_pcap),
+            )
+            
+            raise SystemExit(f"Analysis failed: {error}") from error
         
         window_seconds = DEFAULT_CORRELATION_WINDOW.total_seconds()
         
