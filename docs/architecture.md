@@ -164,7 +164,14 @@ The active BLE path now supports:
 - JSONL `capture.started` and `capture.completed` records that link an
   application session to its current device address, Nordic port, and PCAP;
 - typed parsing of Nordic ATT packets from finalized PCAP files through
-  TShark's JSON output.
+  TShark's JSON and raw-byte output;
+- per-connection UUID-to-ATT-value-handle mappings recorded in the application
+  event log;
+- correlation of application writes and notifications with passive packets
+  using operation type, value handle, payload, and timestamp;
+- offline correlation through `bluetooth-sniffer-analyze`, including separate
+  reporting of matched events, ordinary unmatched events, and captures with
+  no decoded ATT traffic.
 
 The controlled LightBlue iPhone test verified that the NUS profile can connect
 to a virtual peripheral even when its advertisement omits the NUS service
@@ -227,7 +234,32 @@ retained its UTC timestamp, connection access address, central and peripheral
 addresses, RSSI `-35 dBm`, notification opcode, handle `0x0042`, service UUID,
 and payload bytes `68 69` (`hi`).
 
+Wireshark may replace the generic `btatt.value` field when a profile-specific
+dissector recognizes a characteristic. Frame `3890`, for example, exposed the
+NUS write as `btgatt.nordic.uart_tx`. The parser therefore reads the raw ATT
+PDU for writes and notifications and removes the opcode and two-byte handle.
+This keeps payload extraction independent of the selected protocol profile.
+
+The offline analyzer was verified against a mixed-result session. It matched
+the logged `mapping test` write to frame `3890` at value handle `0x001e` and
+RSSI `-35 dBm`. It separately reported the logged `68 69` notification as
+unmatched because that packet was absent from the PCAP. When a session
+contains logged GATT operations but no decoded ATT packets, analysis now
+rejects the PCAP as unusable rather than presenting every operation as an
+ordinary mismatch.
+
+Bidirectional correlation was then verified with an earlier session containing
+both original application events and both passive packets. Because that
+session predates mapping records, its temporary mappings were reconstructed
+from the same PCAP: service discovery placed NUS at handles `0x0040` through
+`0x0046`, the notification used value handle `0x0042`, and the write used
+value handle `0x0045`. The analyzer matched the 18-byte `process group test`
+write to frame `201` at `-25 dBm` and notification bytes `68 69` to frame
+`485` at `-35 dBm`, producing `2/2`.
+
 ## Next implementation steps
 
-1. Correlate application JSONL, HCI, and passive PCAP records without relying
-   on session-specific handles or human-readable characteristic labels.
+1. Produce a structured correlation report for the future display and saved
+   evidence workflow.
+2. Add repeatable analysis tests for matched packets, capture loss, and a
+   Nordic capture that missed the connection handoff.

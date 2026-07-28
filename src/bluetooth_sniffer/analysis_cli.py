@@ -9,6 +9,7 @@ from .correlation import (
     read_gatt_mappings,
 )
 from .pcap_analysis import read_att_packets
+from .reporting import build_correlation_report, write_json_report
 
 DEFAULT_CORRELATION_WINDOW_SECONDS = 2.0
 
@@ -28,6 +29,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Nordic PCAP recorded during the same session",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path for a structured JSON correlation report",
     )
     parser.add_argument(
         "--window",
@@ -58,6 +64,19 @@ async def main() -> None:
         packets,
         max_time_delta=timedelta(seconds=arguments.window),
     )
+    
+    if arguments.output is not None:
+        # Save same correlation evidence in a form for
+        # future screen to consume without terminal parsing
+        report = build_correlation_report(
+            correlations,
+            arguments.event_log,
+            arguments.pcap,
+            arguments.window,
+        )
+        
+        write_json_report(report, arguments.output)
+        print(f"Saved correlation report to {arguments.output}")
 
     matched_count = sum(
         correlation.matched for correlation in correlations
