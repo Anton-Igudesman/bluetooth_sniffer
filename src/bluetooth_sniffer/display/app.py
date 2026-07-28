@@ -35,8 +35,12 @@ class CorrelationDashboard:
         self.root.title("Bluetooth Sniffer")
         self.root.configure(background=BACKGROUND_COLOR)
         
-        # Fullscreen ensures the application occupies the complete Waveshare framebuffer
-        self.root.attributes("-fullscreen", True)
+        # Size application directly from Waveshare X screen dimensions
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        self.root.overrideredirect(True)
+        self.root.geometry(f"{screen_width}x{screen_height}+0+0")
         
         self._build_summary()
         
@@ -60,8 +64,8 @@ class CorrelationDashboard:
         container = tk.Frame(
             self.root,
             background=BACKGROUND_COLOR,
-            padx=24,
-            pady=16,
+            padx=16,
+            pady=10,
         )
         container.pack(fill="both", expand=True)
         
@@ -70,7 +74,7 @@ class CorrelationDashboard:
             text="CAPTURE CORRELATION",
             background=BACKGROUND_COLOR,
             foreground=MUTED_TEXT_COLOR,
-            font=("DejaVu Sans", 15, "bold"),
+            font=("DejaVu Sans", 11, "bold"),
         ).pack(pady=(0, 8))
         
         tk.Label(
@@ -80,15 +84,15 @@ class CorrelationDashboard:
             ),
             background=BACKGROUND_COLOR,
             foreground=PRIMARY_TEXT_COLOR,
-            font=("DejaVu Sans", 42, "bold"),
+            font=("DejaVu Sans", 28, "bold"),
         ).pack()
         
         tk.Label(
             container,
-            text="APPLICATION EVENTS MATCH",
+            text="APPLICATION EVENTS MATCHED",
             background=BACKGROUND_COLOR,
             foreground=MUTED_TEXT_COLOR,
-            font=("DejaVu Sans", 12),
+            font=("DejaVu Sans", 10),
         ).pack(pady=(0, 12))
         
         # This status describes passive packet evidence only
@@ -97,7 +101,7 @@ class CorrelationDashboard:
             text=status_text,
             background=BACKGROUND_COLOR,
             foreground=status_color,
-            font=("DejaVu Sans", 15, "bold"),
+            font=("DejaVu Sans", 11, "bold"),
             wraplength=420,
             justify="center",
         ).pack(expand=True)
@@ -107,9 +111,9 @@ class CorrelationDashboard:
             container,
             text="CLOSE",
             command=self.root.destroy,
-            font=("DejaVu Sans", 14, "bold"),
-            padx=28,
-            pady=8,
+            font=("DejaVu Sans", 11, "bold"),
+            padx=20,
+            pady=5,
         ).pack(pady=(12,0))
         
 def run() -> None:
