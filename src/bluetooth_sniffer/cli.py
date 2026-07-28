@@ -5,10 +5,11 @@ from pathlib import Path
 from .profile_config.loader import load_profile
 from .profile_config.model import ProtocolProfile
 from .scanner import BluetoothScanner
-from .reporting import write_scan_report
+from .reporting import write_correlation_report, write_scan_report
 from .gatt_client import GattClient
 from .event_log import EventLogger
 from .nordic_capture import NordicCapture
+from .correlation import DEFAULT_CORRELATION_WINDOW, analyze_session
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -84,6 +85,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Output path for the Nordic passive PCAP capture",
     )
+    parser.add_argument(
+        "--correlation-output",
+        type=Path,
+        help="Analyze the completed session and save a JSON correlation report",
+    )
 
     arguments = parser.parse_args()
     
@@ -118,6 +124,20 @@ def parse_arguments() -> argparse.Namespace:
         # Connection following needs address selected from current session scan
         if arguments.device is None:
             parser.error("Nordic capture requires --device")
+            
+    if arguments.correlation_output is not None:
+        # Correlation required both observation layers: application events from
+        # JSONL and passive AT packets from Nordic PCAP
+        if arguments.event_log is None:
+            parser.error("--correlation-output requires specified event log")
+            
+        if arguments.nordic_pcap is None:
+            parser.error("--correlation-output requires specified pcap")
+            
+        if not gatt_action_requested:
+            parser.error(
+                "--correlation-output requires specifying write or listen"
+            )
             
     return arguments
 
@@ -374,6 +394,40 @@ async def main() -> None:
                 )
     
     event_logger.record("session.completed")
+    
+    if arguments.correlation_output is not None:
+        # Nordic capture has stopped and session.completed is writted,
+        # Analysis cannot read partially written PCAP or event log
+        correlations = await analyze_session(
+            arguments.event_log,
+            arguments.nordic_pcap,
+        )
+        
+        window_seconds = DEFAULT_CORRELATION_WINDOW.total_seconds()
+        
+        write_correlation_report(
+            correlations,
+            arguments.event_log,
+            arguments.nordic_pcap,
+            arguments.correlation_output,
+            window_seconds,
+        )
+        
+        matched_count = sum(
+            correlation.matched for correlation in correlations
+        )
+        
+        event_logger.record(
+            "analysis.completed",
+            output_path=str(arguments.correlation_output),
+            matched_count=matched_count,
+            event_count=len(correlations),
+        )
+        
+        print(
+            f"Saved correlation report to {arguments.correlation_output}"
+            f" ({matched_count}/{len(correlations)} matched)"
+        )
 
 def run() -> None:
     asyncio.run(main())

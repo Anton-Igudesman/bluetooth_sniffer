@@ -12,6 +12,7 @@ from .pcap_analysis import (
     ATT_NOTIFICATION_OPCODES,
     ATT_WRITE_OPCODES,
     AttPacket,
+    read_att_packets,
 )
 
 type GattEventType = Literal["gatt.write", "gatt.notification"]
@@ -398,3 +399,24 @@ def correlate_gatt_events(
         )
         
     return correlations
+
+async def analyze_session(
+    event_log_path: Path,
+    pcap_path: Path,
+    max_time_delta: timedelta = DEFAULT_CORRELATION_WINDOW,
+) -> list[GattCorrelation]:
+    # Keep session loading in boundary so live application
+    # and offline analyzer are in sync
+    events = read_gatt_events(event_log_path)
+    mappings = read_gatt_mappings(event_log_path)
+    
+    # TShark reads finalized passive capture async because
+    # it runs subprocess not in-process parsing
+    packets = await read_att_packets(pcap_path)
+    
+    return correlate_gatt_events(
+        events,
+        mappings,
+        packets,
+        max_time_delta=max_time_delta,
+    )

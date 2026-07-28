@@ -118,6 +118,23 @@ def write_json_report(report: object, output_path: Path) -> None:
         json.dumps(report, indent=2) + "\n",
         encoding="utf-8",
     )
+    
+def write_correlation_report(
+    correlations: list[GattCorrelation],
+    event_log_path: Path,
+    pcap_path: Path,
+    output_path: Path,
+    window_seconds: float,
+) -> None:
+    # Keep analyzer and live runtime on one report-writing path
+    # Saved evidence uess same schema/source-file
+    report = build_correlation_report(
+        correlations,
+        event_log_path,
+        pcap_path,
+        window_seconds,
+    )
+    write_json_report(report, output_path)
 
 def write_scan_report(results: ScanResults, output_path: Path) -> None:
     report = build_scan_report(results)

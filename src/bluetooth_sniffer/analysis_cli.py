@@ -3,13 +3,8 @@ import asyncio
 from datetime import timedelta
 from pathlib import Path
 
-from .correlation import (
-    correlate_gatt_events,
-    read_gatt_events,
-    read_gatt_mappings,
-)
-from .pcap_analysis import read_att_packets
-from .reporting import build_correlation_report, write_json_report
+from .correlation import analyze_session
+from .reporting import write_correlation_report
 
 DEFAULT_CORRELATION_WINDOW_SECONDS = 2.0
 
@@ -52,30 +47,25 @@ def parse_arguments() -> argparse.Namespace:
 async def main() -> None:
     arguments = parse_arguments()
 
-    # Both files describe the same BLE session from different observation
-    # layers; correlation links application intent to passive radio evidence.
-    events = read_gatt_events(arguments.event_log)
-    mappings = read_gatt_mappings(arguments.event_log)
-    packets = await read_att_packets(arguments.pcap)
-
-    correlations = correlate_gatt_events(
-        events,
-        mappings,
-        packets,
+    # Use same session-analysis boundary that live application
+    # calls after capture has finished
+    correlations = await analyze_session(
+        arguments.event_log,
+        arguments.pcap,
         max_time_delta=timedelta(seconds=arguments.window),
     )
     
     if arguments.output is not None:
         # Save same correlation evidence in a form for
         # future screen to consume without terminal parsing
-        report = build_correlation_report(
+        write_correlation_report(
             correlations,
             arguments.event_log,
             arguments.pcap,
+            arguments.output,
             arguments.window,
         )
         
-        write_json_report(report, arguments.output)
         print(f"Saved correlation report to {arguments.output}")
 
     matched_count = sum(
