@@ -8,6 +8,7 @@ from uuid import UUID
 from collections.abc import Iterator
 
 from .gatt_client import GattCharacteristicMapping
+from .report_io import required_integer
 from .pcap_analysis import (
     ATT_NOTIFICATION_OPCODES,
     ATT_WRITE_OPCODES,
@@ -110,25 +111,6 @@ def _required_uuid(
             key,
             "a valid UUID",
         ) from error
-
-def _required_integer(
-    record: JsonObject,
-    key: str,
-    path: Path,
-    line_number: int,
-) -> int:
-    value = record.get(key)
-    
-    # Python treats bool as int, but T/F are not valid ATT handles
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise _field_error(
-            path,
-            line_number,
-            key,
-            "an integer",
-        )
-        
-    return value
         
 def _required_string_tuple(
     record: JsonObject,
@@ -270,19 +252,19 @@ def read_gatt_mappings(
             path,
             line_number,
         )
-        service_handle = _required_integer(
+        service_handle = required_integer(
             record,
             "service_handle",
             path,
             line_number,
         )
-        declaration_handle = _required_integer(
+        declaration_handle = required_integer(
             record,
             "declaration_handle",
             path,
             line_number,
         )
-        value_handle = _required_integer(
+        value_handle = required_integer(
             record,
             "value_handle",
             path,

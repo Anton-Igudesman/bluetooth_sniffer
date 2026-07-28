@@ -1,8 +1,11 @@
-import json
 from pathlib import Path
 
 from .scanner import ScanResults
 from .correlation import GattCorrelation
+from .report_io import(
+    CORRELATION_REPORT_SCHEMA_VERSION,
+    write_json_report,
+)
 
 def build_scan_report(results: ScanResults) -> list[dict[str, object]]:
     # Preserve captures adv. values without BlueZ-specific objects
@@ -100,7 +103,7 @@ def build_correlation_report(
     return {
         # The screen can reject incompatible report layouts instead
         # of interpreting incorrectly
-        "schema_version": 1,
+        "schema_version": CORRELATION_REPORT_SCHEMA_VERSION,
         "event_log": str(event_log_path),
         "pcap": str(pcap_path),
         "correlation_window_seconds": window_seconds,
@@ -109,15 +112,6 @@ def build_correlation_report(
         "unmatched_count": len(correlations) - matched_count,
         "correlations": records,
     }
-
-def write_json_report(report: object, output_path: Path) -> None:
-    # Scan and correlation reports use same formatting so 
-    # saved artifacts behave consistently
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(report, indent=2) + "\n",
-        encoding="utf-8",
-    )
     
 def write_correlation_report(
     correlations: list[GattCorrelation],

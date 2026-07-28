@@ -19,3 +19,4 @@ dependencies = [
 [project.scripts]
 bluetooth-sniffer = "bluetooth_sniffer.cli:run"
 bluetooth-sniffer-analyze = "bluetooth_sniffer.analysis_cli:run"
+bluetooth-sniffer-display = "bluetooth_sniffer.display.app:run"
