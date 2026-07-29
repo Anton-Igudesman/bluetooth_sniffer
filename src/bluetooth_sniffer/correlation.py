@@ -8,7 +8,14 @@ from uuid import UUID
 from collections.abc import Iterator
 
 from .gatt_client import GattCharacteristicMapping
-from .report_io import required_integer
+from .report_io import (
+    field_error,
+    required_integer,
+    required_list,
+    required_string,
+    required_hex_bytes,
+)
+
 from .pcap_analysis import (
     ATT_NOTIFICATION_OPCODES,
     ATT_WRITE_OPCODES,
@@ -48,20 +55,6 @@ def _log_error(
     # exact session file and line that couldn't be analyzed
     return ValueError(f"{path}:{line_number}: {message}")
 
-def _field_error(
-    path: Path,
-    line_number: int,
-    key: str,
-    requirement: str,
-) -> ValueError:
-    # Every JSONL validation failure should identify the exact file, line,
-    # field, and requirement so damaged session data can be corrected
-    return _log_error(
-        path,
-        line_number,
-        f"{key} must be {requirement}"
-    )
-
 @dataclass(frozen=True)
 class GattCorrelation:
     event: GattEvent
@@ -74,23 +67,6 @@ class GattCorrelation:
         # Keep unmatched events in report - give callers a way
         # to cound which application actions appeared in the PCAP
         return self.packet is not None
-   
-def _required_string(
-    record: JsonObject,
-    key: str,
-    path: Path,
-    line_number: int,
-) -> str:
-    value = record.get(key)
-    
-    if not isinstance(value, str):
-        raise _field_error(
-            path,
-            line_number,
-            key,
-            "a string",
-        )
-    return value
 
 def _required_uuid(
     record: JsonObject,
@@ -98,14 +74,14 @@ def _required_uuid(
     path: Path,
     line_number: int,
 ) -> str:
-    uuid_text = _required_string(record, key, path, line_number)
+    uuid_text = required_string(record, key, path, line_number)
     
     try:
         # Normalized UUIDs compare between profiles, application logs
         # and TShark even if an input used different letter casing
         return str(UUID(uuid_text))
     except ValueError as error:
-        raise _field_error(
+        raise field_error(
             path,
             line_number,
             key,
@@ -118,14 +94,12 @@ def _required_string_tuple(
     path: Path,
     line_number: int,
 ) -> tuple[str, ...]:
-    value = record.get(key)
+    value = required_list(record, key, path, line_number)
     
-    # JSON stored characteristic props as array
-    # Mapping object uses a tuple so props can't change after
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) for item in value
-    ):
-        raise _field_error(
+    # The shared validator proves this is an array
+    # Prevent non-string property from entering immutable GATT mapping
+    if not all(isinstance(item, str) for item in value):
+        raise field_error(
             path,
             line_number,
             key,
@@ -178,7 +152,7 @@ def read_gatt_events(path: Path) -> list[GattEvent]:
         if event_type not in GATT_EVENT_TYPES:
             continue
         
-        timestamp_text = _required_string(
+        timestamp_text = required_string(
             record,
             "timestamp",
             path,
@@ -192,7 +166,7 @@ def read_gatt_events(path: Path) -> list[GattEvent]:
             line_number,
         )
         
-        payload_hex = _required_string(
+        payload = required_hex_bytes(
             record,
             "payload_hex",
             path,
@@ -201,7 +175,6 @@ def read_gatt_events(path: Path) -> list[GattEvent]:
         
         try:
             timestamp = datetime.fromisoformat(timestamp_text)
-            payload = bytes.fromhex(payload_hex)
             
         except ValueError as error:
             raise _log_error(
@@ -211,7 +184,7 @@ def read_gatt_events(path: Path) -> list[GattEvent]:
             ) from error
             
         if timestamp.utcoffset() is None:
-            raise _field_error(
+            raise field_error(
                 path,
                 line_number,
                 "timestamp",

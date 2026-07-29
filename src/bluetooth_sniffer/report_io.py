@@ -7,24 +7,143 @@ from typing import cast
 # as the current format after its fields or meanings change.
 CORRELATION_REPORT_SCHEMA_VERSION = 1
 
+def _source_label(path: Path, line_number: int | None) -> str:
+    # JSONL records include a line number, while correlation reports 
+    # only identify file containing invalid field
+    return (
+        f"{path}:{line_number}"
+        if line_number is not None
+        else str(path)
+    )
+
+def field_error(
+    path: Path,
+    line_number: int | None,
+    key: str,
+    requirement: str,
+) -> ValueError:
+    # Both JSONL events and complete reports use one field-error format
+    # JSONL callers supply record's line number
+    source = _source_label(path, line_number)
+    return ValueError(f"{source}: {key} must be {requirement}")
+
+def _required_type[T](
+    record: dict[str, object],
+    key: str,
+    expected_type: type[T],
+    requirement: str,
+    path: Path,
+    line_number: int | None = None,
+    *,
+    reject_boolean: bool = False,
+) -> T:
+    value = record.get(key)
+    
+    # Reject bool when reading counts and handles so JSON true doesn't become numeric 1
+    invalid_boolean = reject_boolean and isinstance(value, bool)
+    
+    if not isinstance(value, expected_type) or invalid_boolean:
+        raise field_error(path, line_number, key, requirement)
+    
+    return value
+
 def required_integer(
     record: dict[str, object],
     key: str,
     path: Path,
     line_number: int | None = None,
 ) -> int:
-    value = record.get(key)
+    return _required_type(
+        record,
+        key,
+        int,
+        "an integer",
+        path,
+        line_number,
+        reject_boolean=True,
+    )
+
+def required_string(
+    record: dict[str, object],
+    key: str,
+    path: Path,
+    line_number: int | None = None,
+) -> str:
+    return _required_type(
+        record,
+        key,
+        str,
+        "a string",
+        path,
+        line_number,
+    )
     
-    # True/False are not valid ATT handles and must fail JSON validation
-    if isinstance(value, bool) or not isinstance(value, int):
-        source = (
-            f"{path}:{line_number}"
-            if line_number is not None
-            else str(path)
-        )
-        raise ValueError(f"{source}: {key} must be an integer")
+def required_hex_bytes(
+    record: dict[str, object],
+    key: str,
+    path: Path,
+    line_number: int | None = None,
+) -> bytes:
+    value = required_string(record, key, path, line_number)
     
-    return value
+    try:
+        # Application logs and correlation reports store BLE payloads as hex
+        # Return bytes so matching and display models use same representation
+        return bytes.fromhex(value)
+    except ValueError as error:
+        raise field_error(
+            path,
+            line_number,
+            key,
+            "valid hex bytes",
+        ) from error
+
+def required_boolean(
+    record: dict[str, object],
+    key: str,
+    path: Path,
+    line_number: int | None = None,
+) -> bool:
+    return _required_type(
+        record,
+        key,
+        bool,
+        "a boolean",
+        path,
+        line_number,
+    )
+
+def required_object(
+    record: dict[str, object],
+    key: str,
+    path: Path,
+    line_number: int | None = None,
+) -> dict[str, object]:
+    value = _required_type(
+        record,
+        key,
+        dict,
+        "a JSON object",
+        path,
+        line_number,
+    )
+    return cast(dict[str, object], value)
+
+def required_list(
+    record: dict[str, object],
+    key: str,
+    path: Path,
+    line_number: int | None = None,
+) -> list[object]:
+    value = _required_type(
+        record,
+        key,
+        list,
+        "a JSON array",
+        path,
+        line_number,
+    )
+    return cast(list[object], value)
 
 def read_correlation_report(path: Path) -> dict[str, object]:
     try:
