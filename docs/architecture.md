@@ -176,7 +176,12 @@ The active BLE path now supports:
   application events, UUID-to-handle mappings, passive packet evidence, and
   event-to-packet time offsets;
 - optional automatic correlation after a successful live session through
-  `--correlation-output`, after the event log and Nordic PCAP are finalized.
+  `--correlation-output`, after the event log and Nordic PCAP are finalized;
+- a 480x320 touchscreen report viewer that validates one correlation-report
+  snapshot before rendering its summary or event details;
+- event-detail navigation showing GATT operation type, characteristic UUID,
+  hexadecimal and valid UTF-8 payload representations, matched PCAP frame,
+  and captured RSSI.
 
 The controlled LightBlue iPhone test verified that the NUS profile can connect
 to a virtual peripheral even when its advertisement omits the NUS service
