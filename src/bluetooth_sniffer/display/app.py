@@ -73,6 +73,7 @@ class CorrelationDashboard:
         # moves between connection, service, characteristic, and descriptor screens.
         self.selected_live_device: LiveDevice | None = None
         self.gatt_services: tuple[GattServiceSnapshot, ...] = ()
+        self.gatt_services_list: tk.Listbox | None = None
         self.connection_status_text = "DISCONNECTED"
         self.connection_status_color = MUTED_TEXT_COLOR
         self.connection_status_label: tk.Label | None = None
@@ -111,6 +112,7 @@ class CorrelationDashboard:
         self.live_status_label = None
         self.live_devices_list = None
         self.connection_status_label = None
+        self.gatt_services_list = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -428,6 +430,209 @@ class CorrelationDashboard:
             foreground=self.connection_status_color,
         )
 
+    def _build_gatt_services(self) -> None:
+        device = self.selected_live_device
+
+        if device is None:
+            raise RuntimeError(
+                "Cannot browse GATT services without a selected device"
+            )
+
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=f"GATT SERVICES — {self._shorten(device.name, 24)}",
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 11, "bold"),
+        ).pack(pady=(0, 3))
+
+        self.connection_status_label = tk.Label(
+            container,
+            text=f"CONNECTED • {len(self.gatt_services)} SERVICES",
+            background=BACKGROUND_COLOR,
+            foreground=SUCCESS_COLOR,
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.connection_status_label.pack(fill="x", pady=(0, 5))
+
+        self.gatt_services_list = tk.Listbox(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            selectbackground="#1F6FEB",
+            selectforeground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            height=10,
+            activestyle="none",
+            exportselection=False,
+        )
+        self.gatt_services_list.pack(fill="both", expand=True)
+
+        for service in self.gatt_services:
+            # Handles identify this connection's attribute entries; UUIDs remain
+            # the stable identities used by profiles and later operations.
+            self.gatt_services_list.insert(
+                tk.END,
+                f"{service.handle:>4}  "
+                f"{self._shorten(service.description, 34)}",
+            )
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x", pady=(7, 0))
+
+        tk.Button(
+            actions,
+            text="DETAILS",
+            command=self._open_selected_gatt_service,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="DISCONNECT",
+            command=self._leave_live_connection,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+
+    def _open_selected_gatt_service(self) -> None:
+        services_list = self.gatt_services_list
+
+        if services_list is None:
+            return
+
+        selected_indices = services_list.curselection()
+
+        if not selected_indices:
+            self.connection_status_text = "SELECT A SERVICE FIRST"
+            self.connection_status_color = WARNING_COLOR
+            self._render_connection_status()
+            return
+
+        selected_index = selected_indices[0]
+
+        if selected_index >= len(self.gatt_services):
+            self.connection_status_text = (
+                "THE SELECTED SERVICE IS NO LONGER AVAILABLE"
+            )
+            self.connection_status_color = WARNING_COLOR
+            self._render_connection_status()
+            return
+
+        self._build_gatt_service(self.gatt_services[selected_index])
+
+    def _build_gatt_service(self, service: GattServiceSnapshot) -> None:
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=self._shorten(service.description, 38),
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 11, "bold"),
+        ).pack(pady=(0, 2))
+
+        tk.Label(
+            container,
+            text=service.uuid,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+        ).pack()
+
+        tk.Label(
+            container,
+            text=(
+                f"SERVICE HANDLE {service.handle} • "
+                f"{len(service.characteristics)} CHARACTERISTICS"
+            ),
+            background=BACKGROUND_COLOR,
+            foreground=SUCCESS_COLOR,
+            font=("DejaVu Sans", 9, "bold"),
+        ).pack(pady=(4, 5))
+
+        characteristics_list = tk.Listbox(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            height=9,
+            activestyle="none",
+        )
+        characteristics_list.pack(fill="both", expand=True)
+
+        for characteristic in service.characteristics:
+            properties = ",".join(characteristic.properties) or "none"
+
+            # ATT reads, writes, and notifications target value_handle, so that
+            # operational handle is shown beside each characteristic.
+            characteristics_list.insert(
+                tk.END,
+                f"{characteristic.value_handle:>4}  "
+                f"{self._shorten(characteristic.description, 20):<20} "
+                f"{properties}",
+            )
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x", pady=(7, 0))
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=self._build_gatt_services,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="DISCONNECT",
+            command=self._leave_live_connection,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+    
     def _leave_live_connection(self) -> None:
         if self.connection_session_finished:
             self.return_to_scan_after_disconnect = False
@@ -516,7 +721,7 @@ class CorrelationDashboard:
                 )
                 self.connection_status_color = SUCCESS_COLOR
                 self.connection_failed = False
-                self._render_connection_status()
+                self._build_gatt_services()
 
             elif isinstance(update, RuntimeFailed):
                 if update.operation == "scan":
