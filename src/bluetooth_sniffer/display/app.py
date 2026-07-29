@@ -4,7 +4,11 @@ from pathlib import Path
 
 from .model import CorrelationReport, load_correlation_report
 from ..scanner import DEFAULT_SCAN_DURATION_SECONDS
-from ..gatt_client import GattServiceSnapshot
+from ..gatt_client import (
+    GattCharacteristicSnapshot,
+    GattServiceSnapshot,
+)
+
 from .live_runtime import (
     ConnectionClosed,
     ConnectionStarted,
@@ -74,11 +78,13 @@ class CorrelationDashboard:
         self.selected_live_device: LiveDevice | None = None
         self.gatt_services: tuple[GattServiceSnapshot, ...] = ()
         self.gatt_services_list: tk.Listbox | None = None
+        self.selected_gatt_service: GattServiceSnapshot | None = None
+        self.gatt_characteristics_list: tk.Listbox | None = None
+        
         self.connection_status_text = "DISCONNECTED"
         self.connection_status_color = MUTED_TEXT_COLOR
         self.connection_status_label: tk.Label | None = None
         self.return_to_scan_after_disconnect = False
-        
         self.connection_session_finished = True
         self.connection_failed = False
         
@@ -113,6 +119,7 @@ class CorrelationDashboard:
         self.live_devices_list = None
         self.connection_status_label = None
         self.gatt_services_list = None
+        self.gatt_characteristics_list = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -545,6 +552,8 @@ class CorrelationDashboard:
 
     def _build_gatt_service(self, service: GattServiceSnapshot) -> None:
         self._clear_screen()
+        
+        self.selected_gatt_service = service
 
         container = tk.Frame(
             self.root,
@@ -581,22 +590,25 @@ class CorrelationDashboard:
             font=("DejaVu Sans", 9, "bold"),
         ).pack(pady=(4, 5))
 
-        characteristics_list = tk.Listbox(
+        self.gatt_characteristics_list = tk.Listbox(
             container,
             background="#161B22",
             foreground=PRIMARY_TEXT_COLOR,
             font=("DejaVu Sans Mono", 8),
             height=9,
             activestyle="none",
+            selectbackground="#1F6FEB",
+            selectforeground=PRIMARY_TEXT_COLOR,
+            exportselection=False,
         )
-        characteristics_list.pack(fill="both", expand=True)
+        self.gatt_characteristics_list.pack(fill="both", expand=True)
 
         for characteristic in service.characteristics:
             properties = ",".join(characteristic.properties) or "none"
 
             # ATT reads, writes, and notifications target value_handle, so that
             # operational handle is shown beside each characteristic.
-            characteristics_list.insert(
+            self.gatt_characteristics_list.insert(
                 tk.END,
                 f"{characteristic.value_handle:>4}  "
                 f"{self._shorten(characteristic.description, 20):<20} "
@@ -605,11 +617,176 @@ class CorrelationDashboard:
 
         actions = tk.Frame(container, background=BACKGROUND_COLOR)
         actions.pack(fill="x", pady=(7, 0))
-
+        
+        tk.Button(
+            actions,
+            text="DETAILS",
+            command=self._open_selected_gatt_characteristic,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+        
         tk.Button(
             actions,
             text="BACK",
             command=self._build_gatt_services,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="DISCONNECT",
+            command=self._leave_live_connection,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+    
+    def _open_selected_gatt_characteristic(self) -> None:
+        characteristics_list = self.gatt_characteristics_list
+        service = self.selected_gatt_service
+
+        if characteristics_list is None or service is None:
+            return
+
+        selected_indices = characteristics_list.curselection()
+
+        if not selected_indices:
+            return
+
+        selected_index = selected_indices[0]
+
+        if selected_index >= len(service.characteristics):
+            return
+
+        self._build_gatt_characteristic(
+            service,
+            service.characteristics[selected_index],
+        )
+
+    def _build_gatt_characteristic(
+        self,
+        service: GattServiceSnapshot,
+        characteristic: GattCharacteristicSnapshot,
+    ) -> None:
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=self._shorten(characteristic.description, 38),
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 11, "bold"),
+        ).pack(pady=(0, 2))
+
+        tk.Label(
+            container,
+            text=characteristic.uuid,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            wraplength=450,
+        ).pack()
+
+        tk.Label(
+            container,
+            text=f"SERVICE: {self._shorten(service.description, 34)}",
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans", 8),
+        ).pack(pady=(3, 2))
+
+        # The declaration describes the characteristic, while ATT data
+        # operations use its value handle; showing both prevents capture
+        # frames from being compared with the wrong attribute.
+        tk.Label(
+            container,
+            text=(
+                f"DECLARATION {characteristic.declaration_handle}  •  "
+                f"VALUE {characteristic.value_handle}"
+            ),
+            background=BACKGROUND_COLOR,
+            foreground=SUCCESS_COLOR,
+            font=("DejaVu Sans", 9, "bold"),
+        ).pack(pady=(2, 3))
+
+        properties = ", ".join(characteristic.properties) or "none"
+
+        tk.Label(
+            container,
+            text=f"PROPERTIES: {properties}",
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 8),
+            wraplength=450,
+            justify="left",
+        ).pack(fill="x", pady=(0, 4))
+
+        tk.Label(
+            container,
+            text=f"DESCRIPTORS ({len(characteristic.descriptors)})",
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans", 8, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+
+        descriptors_text = tk.Text(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            height=6,
+            wrap="char",
+            relief="flat",
+        )
+        descriptors_text.pack(fill="both", expand=True, pady=(3, 6))
+
+        if characteristic.descriptors:
+            for descriptor in characteristic.descriptors:
+                descriptors_text.insert(
+                    tk.END,
+                    f"{descriptor.description}\n"
+                    f"UUID {descriptor.uuid}\n"
+                    f"HANDLE {descriptor.handle}\n\n",
+                )
+        else:
+            descriptors_text.insert(
+                tk.END,
+                "No descriptors discovered for this characteristic",
+            )
+
+        # Attribute metadata is inspectable here; editable values and live
+        # operations are added separately according to characteristic properties.
+        descriptors_text.configure(state="disabled")
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x")
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=lambda: self._build_gatt_service(service),
             font=("DejaVu Sans", 9, "bold"),
             padx=12,
             pady=3,
