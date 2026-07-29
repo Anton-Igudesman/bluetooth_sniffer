@@ -4,7 +4,11 @@ from pathlib import Path
 
 from .model import CorrelationReport, load_correlation_report
 from ..scanner import DEFAULT_SCAN_DURATION_SECONDS
+from ..gatt_client import GattServiceSnapshot
 from .live_runtime import (
+    ConnectionClosed,
+    ConnectionStarted,
+    GattDiscovered,
     LiveDevice,
     LiveRuntime,
     RuntimeFailed,
@@ -65,6 +69,18 @@ class CorrelationDashboard:
         self.live_status_label: tk.Label | None = None
         self.live_devices_list: tk.Listbox | None = None
         
+        # Preserve the chosen device and its connected GATT hierarchy while the user
+        # moves between connection, service, characteristic, and descriptor screens.
+        self.selected_live_device: LiveDevice | None = None
+        self.gatt_services: tuple[GattServiceSnapshot, ...] = ()
+        self.connection_status_text = "DISCONNECTED"
+        self.connection_status_color = MUTED_TEXT_COLOR
+        self.connection_status_label: tk.Label | None = None
+        self.return_to_scan_after_disconnect = False
+        
+        self.connection_session_finished = True
+        self.connection_failed = False
+        
         self.root.title("Bluetooth Sniffer")
         self.root.configure(background=BACKGROUND_COLOR)
         
@@ -94,6 +110,7 @@ class CorrelationDashboard:
         # Stop runtime updates from targeting widgets destroyed during navigation
         self.live_status_label = None
         self.live_devices_list = None
+        self.connection_status_label = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -279,8 +296,113 @@ class CorrelationDashboard:
 
         tk.Button(
             actions,
+            text="CONNECT",
+            command=lambda: self._start_live_connection(device),
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+        
+        tk.Button(
+            actions,
             text="BACK",
             command=self._build_live_scan,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+    
+    def _start_live_connection(self, device: LiveDevice) -> None:
+        self.selected_live_device = device
+        self.gatt_services = ()
+        self.connection_status_text = "CONNECTING AND DISCOVERING GATT"
+        self.connection_status_color = MUTED_TEXT_COLOR
+        self.connection_session_finished = False
+        self.connection_failed = False
+        self.return_to_scan_after_disconnect = False
+        self._build_connection_status()
+
+        try:
+            self.live_runtime.start_connection(device.address)
+        except (RuntimeError, ValueError) as error:
+            self.connection_status_text = f"CONNECTION FAILED: {error}"
+            self.connection_status_color = WARNING_COLOR
+            self.connection_session_finished = True
+            self.connection_failed = True
+            self._render_connection_status()
+            return
+
+        self._schedule_live_poll()
+
+    def _build_connection_status(self) -> None:
+        device = self.selected_live_device
+
+        if device is None:
+            raise RuntimeError(
+                "Cannot display connection status without a selected device"
+            )
+
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=14,
+            pady=10,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text="LIVE GATT CONNECTION",
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans", 10, "bold"),
+        ).pack(pady=(0, 8))
+
+        tk.Label(
+            container,
+            text=self._shorten(device.name, 36),
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 14, "bold"),
+        ).pack()
+
+        tk.Label(
+            container,
+            text=device.address,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 9),
+        ).pack(pady=(3, 10))
+
+        self.connection_status_label = tk.Label(
+            container,
+            text=self.connection_status_text,
+            background=BACKGROUND_COLOR,
+            foreground=self.connection_status_color,
+            font=("DejaVu Sans", 11, "bold"),
+            wraplength=440,
+            justify="center",
+        )
+        self.connection_status_label.pack(expand=True)
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x", pady=(10, 0))
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=self._leave_live_connection,
             font=("DejaVu Sans", 9, "bold"),
             padx=12,
             pady=3,
@@ -294,6 +416,29 @@ class CorrelationDashboard:
             padx=12,
             pady=3,
         ).pack(side="right")
+
+    def _render_connection_status(self) -> None:
+        status_label = self.connection_status_label
+
+        if status_label is None:
+            return
+
+        status_label.configure(
+            text=self.connection_status_text,
+            foreground=self.connection_status_color,
+        )
+
+    def _leave_live_connection(self) -> None:
+        if self.connection_session_finished:
+            self.return_to_scan_after_disconnect = False
+            self._build_live_scan()
+            return
+
+        self.return_to_scan_after_disconnect = True
+        self.connection_status_text = "DISCONNECTING"
+        self.connection_status_color = MUTED_TEXT_COLOR
+        self._render_connection_status()
+        self.live_runtime.request_disconnect()
     
     def _start_live_scan(self) -> None:
         if not self.live_runtime_started:
@@ -341,13 +486,15 @@ class CorrelationDashboard:
         # registered without creating two simultaneous polling loops.
         self.poll_job = None
         updates = self.live_runtime.drain_updates()
-        
+        scan_state_changed = False
+
         for update in updates:
             if isinstance(update, ScanStarted):
                 self.live_status_text = (
                     f"SCANNING FOR {update.duration_seconds:g} SECONDS"
                 )
                 self.live_status_color = MUTED_TEXT_COLOR
+                scan_state_changed = True
 
             elif isinstance(update, ScanCompleted):
                 self.live_devices = update.devices
@@ -355,17 +502,59 @@ class CorrelationDashboard:
                     f"FOUND {len(update.devices)} BLE DEVICE(S)"
                 )
                 self.live_status_color = SUCCESS_COLOR
+                scan_state_changed = True
+
+            elif isinstance(update, ConnectionStarted):
+                self.connection_status_text = "CONNECTING AND DISCOVERING GATT"
+                self.connection_status_color = MUTED_TEXT_COLOR
+                self._render_connection_status()
+
+            elif isinstance(update, GattDiscovered):
+                self.gatt_services = update.services
+                self.connection_status_text = (
+                    f"CONNECTED: DISCOVERED {len(update.services)} SERVICE(S)"
+                )
+                self.connection_status_color = SUCCESS_COLOR
+                self.connection_failed = False
+                self._render_connection_status()
 
             elif isinstance(update, RuntimeFailed):
-                self.live_status_text = (
-                    f"{update.error_type}: {update.message}"
-                )
-                self.live_status_color = WARNING_COLOR
+                if update.operation == "scan":
+                    self.live_status_text = (
+                        f"{update.error_type}: {update.message}"
+                    )
+                    self.live_status_color = WARNING_COLOR
+                    scan_state_changed = True
+                else:
+                    self.connection_status_text = (
+                        f"{update.operation.upper()} FAILED: "
+                        f"{update.error_type}: {update.message}"
+                    )
+                    self.connection_status_color = WARNING_COLOR
+                    self.connection_failed = True
+                    self._render_connection_status()
 
-        # Redraw only when runtime has supplied new scan state
-        if updates:
+            elif isinstance(update, ConnectionClosed):
+                self.connection_session_finished = True
+
+                if (
+                    self.return_to_scan_after_disconnect
+                    and not self.connection_failed
+                ):
+                    self.return_to_scan_after_disconnect = False
+                    self._build_live_scan()
+                else:
+                    if not self.connection_failed:
+                        self.connection_status_text = "DISCONNECTED"
+                        self.connection_status_color = MUTED_TEXT_COLOR
+
+                    self._render_connection_status()
+
+        # Redrawing scan rows removes their selected state, so only scan
+        # updates are allowed to rebuild that Listbox.
+        if scan_state_changed:
             self._render_live_scan()
-        
+
         self._schedule_live_poll()
 
     def _render_live_scan(self) -> None:

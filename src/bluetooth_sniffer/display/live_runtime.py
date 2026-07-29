@@ -36,6 +36,7 @@ class GattDiscovered:
 @dataclass(frozen=True)
 class ConnectionClosed:
     device_address: str
+    connection_opened: bool
 
 @dataclass(frozen=True)
 class RuntimeFailed:
@@ -280,11 +281,15 @@ class LiveRuntime:
 
             self._gatt_client = None
             self._disconnect_event = None
-
-            if connected:
-                self._updates.put(
-                    ConnectionClosed(device_address=device_address)
+            
+            # Tk needs a final update after success, failure, cancel
+            # Whether to allow another scan/connection
+            self._updates.put(
+                ConnectionClosed(
+                    device_address=device_address,
+                    connection_opened=connected,
                 )
+            )
 
     def request_disconnect(self) -> None:
         connection_future = self._connection_future
