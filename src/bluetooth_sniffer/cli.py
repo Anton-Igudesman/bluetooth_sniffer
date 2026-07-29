@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .profile_config.loader import load_profile
 from .profile_config.model import ProtocolProfile
-from .scanner import BluetoothScanner
+from .scanner import BluetoothScanner, DEFAULT_SCAN_DURATION_SECONDS
 from .reporting import write_correlation_report, write_scan_report
 from .gatt_client import GattClient
 from .event_log import EventLogger
@@ -15,8 +15,6 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from .selection import find_devices
-
-DEFAULT_SCAN_DURATION_SECONDS = 10.0
 
 def parse_arguments() -> argparse.Namespace:
     # Keep launch-time input handling separate from Bluetooth scanning

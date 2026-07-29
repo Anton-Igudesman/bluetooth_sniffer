@@ -3,6 +3,14 @@ import tkinter as tk
 from pathlib import Path
 
 from .model import CorrelationReport, load_correlation_report
+from ..scanner import DEFAULT_SCAN_DURATION_SECONDS
+from .live_runtime import (
+    LiveDevice,
+    LiveRuntime,
+    RuntimeFailed,
+    ScanCompleted,
+    ScanStarted,
+)
 
 # Screen color palette
 BACKGROUND_COLOR = "#0B1117"
@@ -21,6 +29,13 @@ def parse_arguments() -> argparse.Namespace:
         required=True,
         help="Structured correlation JSON report to display",
     )
+    parser.add_argument(
+        "--scan-duration",
+        type=float,
+        default=DEFAULT_SCAN_DURATION_SECONDS,
+        help="Live BLE scan duration in seconds (default: %(default)s)",
+    )
+    
     return parser.parse_args()
 
 class CorrelationDashboard:
@@ -28,10 +43,27 @@ class CorrelationDashboard:
         self,
         root: tk.Tk,
         report: CorrelationReport,
+        scan_duration_seconds: float,
     ) -> None:
         self.root = root
         self.report = report
         self.summary = report.summary
+        
+        if scan_duration_seconds <= 0:
+            raise ValueError("Scan duration must be greater than zero"
+            )
+            
+        self.scan_duration_seconds = scan_duration_seconds
+        self.live_runtime = LiveRuntime()
+        self.live_runtime_started = False
+        self.poll_job: str | None = None
+        
+        # Values survive screen navigation
+        self.live_devices: tuple[LiveDevice, ...] = ()
+        self.live_status_text = "READY TO SCAN"
+        self.live_status_color = MUTED_TEXT_COLOR
+        self.live_status_label: tk.Label | None = None
+        self.live_devices_list: tk.Listbox | None = None
         
         self.root.title("Bluetooth Sniffer")
         self.root.configure(background=BACKGROUND_COLOR)
@@ -43,9 +75,26 @@ class CorrelationDashboard:
         self.root.overrideredirect(True)
         self.root.geometry(f"{screen_width}x{screen_height}+0+0")
         
+        # WIndow-manager close and on-screen CLOSE share same worker cleanup
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._build_summary()
     
+    def _close(self) -> None:
+        if self.poll_job is not None:
+            self.root.after_cancel(self.poll_job)
+            self.poll_job = None
+            
+        try:
+            self.live_runtime.close()
+        finally:
+            # Destroy Tk even if worker shutdown reports LC fail
+            self.root.destroy()
+    
     def _clear_screen(self) -> None:
+        # Stop runtime updates from targeting widgets destroyed during navigation
+        self.live_status_label = None
+        self.live_devices_list = None
+        
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
             widget.destroy()
@@ -54,6 +103,176 @@ class CorrelationDashboard:
     def _shorten(value: str, limit: int) -> str:
         # Preserve full payload preventing display leaks
         return value if len(value) <= limit else f"{value[:limit - 3]}..."
+    
+    def _build_live_scan(self) -> None:
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text="LIVE BLE SCAN",
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 12, "bold"),
+        ).pack(pady=(0, 4))
+
+        self.live_status_label = tk.Label(
+            container,
+            text=self.live_status_text,
+            background=BACKGROUND_COLOR,
+            foreground=self.live_status_color,
+            font=("DejaVu Sans", 9, "bold"),
+            wraplength=440,
+        )
+        self.live_status_label.pack(fill="x", pady=(0, 6))
+
+        self.live_devices_list = tk.Listbox(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            selectbackground="#1F6FEB",
+            selectforeground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            height=10,
+            activestyle="none",
+        )
+        self.live_devices_list.pack(fill="both", expand=True)
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x", pady=(7, 0))
+
+        tk.Button(
+            actions,
+            text="SCAN",
+            command=self._start_live_scan,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=self._build_summary,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+
+        self._render_live_scan()
+
+    def _start_live_scan(self) -> None:
+        if not self.live_runtime_started:
+            try:
+                self.live_runtime.start()
+            except Exception as error:
+                self.live_status_text = (
+                    f"RUNTIME FAILED: {type(error).__name__}: {error}"
+                )
+                self.live_status_color = WARNING_COLOR
+                self._render_live_scan()
+                return
+
+            # LiveRuntime owns one worker thread for every scan made by this UI.
+            self.live_runtime_started = True
+
+        self.live_devices = ()
+        self.live_status_text = (
+            f"STARTING {self.scan_duration_seconds:g}-SECOND SCAN"
+        )
+        self.live_status_color = MUTED_TEXT_COLOR
+        self._render_live_scan()
+
+        try:
+            self.live_runtime.start_scan(self.scan_duration_seconds)
+        except (RuntimeError, ValueError) as error:
+            self.live_status_text = f"SCAN FAILED: {error}"
+            self.live_status_color = WARNING_COLOR
+            self._render_live_scan()
+            return
+
+        self._schedule_live_poll()
+
+    def _schedule_live_poll(self) -> None:
+        if self.poll_job is None:
+            # Tk polls the thread-safe queue because only Tk's main thread may
+            # update labels and device rows on the touchscreen.
+            self.poll_job = self.root.after(
+                100,
+                self._poll_live_updates,
+            )
+
+    def _poll_live_updates(self) -> None:
+        # This scheduled callback is now executing, so another callback may be
+        # registered without creating two simultaneous polling loops.
+        self.poll_job = None
+
+        for update in self.live_runtime.drain_updates():
+            if isinstance(update, ScanStarted):
+                self.live_status_text = (
+                    f"SCANNING FOR {update.duration_seconds:g} SECONDS"
+                )
+                self.live_status_color = MUTED_TEXT_COLOR
+
+            elif isinstance(update, ScanCompleted):
+                self.live_devices = update.devices
+                self.live_status_text = (
+                    f"FOUND {len(update.devices)} BLE DEVICE(S)"
+                )
+                self.live_status_color = SUCCESS_COLOR
+
+            elif isinstance(update, RuntimeFailed):
+                self.live_status_text = (
+                    f"{update.error_type}: {update.message}"
+                )
+                self.live_status_color = WARNING_COLOR
+
+        self._render_live_scan()
+        self._schedule_live_poll()
+
+    def _render_live_scan(self) -> None:
+        status_label = self.live_status_label
+        devices_list = self.live_devices_list
+
+        # A scan may finish while another screen is open; its results remain in
+        # live_devices and will render when the user returns to LIVE SCAN.
+        if status_label is None or devices_list is None:
+            return
+
+        status_label.configure(
+            text=self.live_status_text,
+            foreground=self.live_status_color,
+        )
+
+        devices_list.delete(0, tk.END)
+
+        if not self.live_devices:
+            devices_list.insert(tk.END, "No scan results to display")
+            return
+
+        for device in self.live_devices:
+            devices_list.insert(
+                tk.END,
+                f"{device.rssi:>4} dBm  "
+                f"{device.name[:20]:<20}  "
+                f"{device.address}",
+        )
         
     def _build_summary(self) -> None:
         self._clear_screen()
@@ -124,6 +343,15 @@ class CorrelationDashboard:
         )
         actions.pack(pady=(12,0))
         
+        tk.Button(
+            actions,
+            text="LIVE SCAN",
+            command=self._build_live_scan,
+            font=("DejaVu Sans", 10, "bold"),
+            padx=14,
+            pady=4,
+        ).pack(side="left", padx=6)
+        
         if self.report.events:
             tk.Button(
                 actions,
@@ -137,7 +365,7 @@ class CorrelationDashboard:
         tk.Button(
             actions,
             text="CLOSE",
-            command=self.root.destroy,
+            command=self._close,
             font=("DejaVu Sans", 10, "bold"),
             padx=14,
             pady=4,
@@ -277,7 +505,7 @@ def run() -> None:
     report = load_correlation_report(arguments.report)
     
     root = tk.Tk()
-    CorrelationDashboard(root, report)
+    CorrelationDashboard(root, report, arguments.scan_duration)
     root.mainloop()
     
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice # passed to connection
 from bleak.backends.scanner import AdvertisementData # RSSI/man. data
 
+DEFAULT_SCAN_DURATION_SECONDS = 10.0
 type ScanResults = dict[str, tuple[BLEDevice, AdvertisementData]]
 
 class BluetoothScanner:
