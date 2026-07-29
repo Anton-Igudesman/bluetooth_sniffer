@@ -7,6 +7,7 @@ from typing import Literal
 from concurrent.futures import Future
 
 from ..scanner import BluetoothScanner, ScanResults
+from ..gatt_client import GattClient, GattServiceSnapshot
 
 @dataclass(frozen=True)
 class LiveDevice:
@@ -22,14 +23,34 @@ class ScanStarted:
 @dataclass(frozen=True)
 class ScanCompleted:
     devices: tuple[LiveDevice, ...]
+    
+@dataclass(frozen=True)
+class ConnectionStarted:
+    device_address: str
+
+@dataclass(frozen=True)
+class GattDiscovered:
+    device_address: str
+    services: tuple[GattServiceSnapshot, ...]
+
+@dataclass(frozen=True)
+class ConnectionClosed:
+    device_address: str
 
 @dataclass(frozen=True)
 class RuntimeFailed:
-    operation: Literal["scan"]
+    operation: Literal["scan", "connect", "disconnect"]
     error_type: str
     message: str
 
-type LiveUpdate = ScanStarted | ScanCompleted | RuntimeFailed
+type LiveUpdate = (
+    ScanStarted
+    | ScanCompleted
+    | ConnectionStarted
+    | GattDiscovered
+    | ConnectionClosed
+    | RuntimeFailed
+)
 
 class LiveRuntime:
     def __init__(self) -> None:
@@ -39,6 +60,12 @@ class LiveRuntime:
         self._thread: Thread | None = None
         self._scan_future: Future[None] | None = None
         self._scan_results: ScanResults = {}
+        
+        # Retain the GATT client on its owning event loop so later read, write, and
+        # notification operations use the same live connection and discovered handles.
+        self._connection_future: Future[None] | None = None
+        self._gatt_client: GattClient | None = None
+        self._disconnect_event: asyncio.Event | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -96,7 +123,14 @@ class LiveRuntime:
         
         if self._scan_future is not None and not self._scan_future.done():
             raise RuntimeError("A Bluetooth scan is already running")
-    
+
+        if (
+            self._connection_future is not None
+            and not self._connection_future.done()
+        ):
+            raise RuntimeError(
+                "Cannot scan while a device connection is open"
+            )
         # This thead-safe submission returns to Tk
         # Future retained to block a second scan until this has completed
         self._scan_future = asyncio.run_coroutine_threadsafe(
@@ -154,6 +188,120 @@ class LiveRuntime:
         
         self._updates.put(ScanCompleted(devices=devices))
 
+    def start_connection(self, device_address: str) -> None:
+        device_address = device_address.strip()
+
+        if not device_address:
+            raise ValueError("Device address must not be empty")
+
+        loop = self._loop
+
+        if loop is None or not loop.is_running():
+            raise RuntimeError("Live runtime is not running")
+
+        if self._scan_future is not None and not self._scan_future.done():
+            raise RuntimeError(
+                "Cannot connect while a Bluetooth scan is running"
+            )
+
+        if (
+            self._connection_future is not None
+            and not self._connection_future.done()
+        ):
+            raise RuntimeError("A device connection is already open")
+
+        self._connection_future = asyncio.run_coroutine_threadsafe(
+            self._connection_session(device_address),
+            loop,
+        )
+
+    async def _connection_session(self, device_address: str) -> None:
+        self._updates.put(
+            ConnectionStarted(device_address=device_address)
+        )
+
+        client: GattClient | None = None
+        connected = False
+
+        try:
+            # The UI passes an address from the same completed scan, allowing
+            # us to recover the original BLEDevice instead of reconnecting from
+            # a hardcoded or previously cached address.
+            scan_result = self._scan_results.get(device_address)
+
+            if scan_result is None:
+                raise ValueError(
+                    f"{device_address} is not available in the current scan"
+                )
+
+            device, _advertisement = scan_result
+            client = GattClient(device)
+            await client.connect()
+            connected = True
+
+            self._gatt_client = client
+            self._disconnect_event = asyncio.Event()
+
+            # Discovery happens on the Bleak worker loop; Tk receives only the
+            # immutable snapshot and never accesses live BlueZ objects.
+            services = client.gatt_snapshot()
+            self._updates.put(
+                GattDiscovered(
+                    device_address=device_address,
+                    services=services,
+                )
+            )
+
+            # Keep this coroutine and its GattClient alive for later attribute
+            # reads, writes, and notification subscriptions from the browser.
+            await self._disconnect_event.wait()
+
+        except Exception as error:
+            self._updates.put(
+                RuntimeFailed(
+                    operation="connect",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+
+        finally:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception as error:
+                    self._updates.put(
+                        RuntimeFailed(
+                            operation="disconnect",
+                            error_type=type(error).__name__,
+                            message=str(error),
+                        )
+                    )
+
+            self._gatt_client = None
+            self._disconnect_event = None
+
+            if connected:
+                self._updates.put(
+                    ConnectionClosed(device_address=device_address)
+                )
+
+    def request_disconnect(self) -> None:
+        connection_future = self._connection_future
+
+        if connection_future is None or connection_future.done():
+            return
+
+        disconnect_event = self._disconnect_event
+        loop = self._loop
+
+        if disconnect_event is not None and loop is not None:
+            loop.call_soon_threadsafe(disconnect_event.set)
+        else:
+            # Cancellation covers BACK or CLOSE while connection setup is still
+            # waiting for BlueZ and has not created its disconnect event yet.
+            connection_future.cancel()
+    
     def drain_updates(self) -> tuple[LiveUpdate, ...]:
         updates: list[LiveUpdate] = []
 
