@@ -32,6 +32,12 @@ class ConnectionStarted:
 class GattDiscovered:
     device_address: str
     services: tuple[GattServiceSnapshot, ...]
+    
+@dataclass(frozen=True)
+class CharacteristicRead:
+    service_uuid: str
+    characteristic_uuid: str
+    value: bytes
 
 @dataclass(frozen=True)
 class ConnectionClosed:
@@ -40,7 +46,7 @@ class ConnectionClosed:
 
 @dataclass(frozen=True)
 class RuntimeFailed:
-    operation: Literal["scan", "connect", "disconnect"]
+    operation: Literal["scan", "connect", "disconnect", "read"]
     error_type: str
     message: str
 
@@ -49,6 +55,7 @@ type LiveUpdate = (
     | ScanCompleted
     | ConnectionStarted
     | GattDiscovered
+    | CharacteristicRead
     | ConnectionClosed
     | RuntimeFailed
 )
@@ -67,6 +74,8 @@ class LiveRuntime:
         self._connection_future: Future[None] | None = None
         self._gatt_client: GattClient | None = None
         self._disconnect_event: asyncio.Event | None = None
+        
+        self._read_future: Future[None] | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -216,6 +225,65 @@ class LiveRuntime:
             loop,
         )
 
+    def start_characteristic_read(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        loop = self._loop
+        client = self._gatt_client
+
+        if loop is None or not loop.is_running():
+            raise RuntimeError("Live runtime is not running")
+
+        if client is None:
+            raise RuntimeError("No connected device is available for reading")
+
+        if self._read_future is not None and not self._read_future.done():
+            raise RuntimeError("A characteristic read is already running")
+
+        # Pass the active client into this task so the read stays tied to the
+        # connection whose GATT hierarchy is currently shown on the touchscreen.
+        self._read_future = asyncio.run_coroutine_threadsafe(
+            self._read_characteristic(
+                client,
+                service_uuid,
+                characteristic_uuid,
+            ),
+            loop,
+        )
+
+    async def _read_characteristic(
+        self,
+        client: GattClient,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        try:
+            value = await client.read_characteristic(
+                service_uuid,
+                characteristic_uuid,
+            )
+        except Exception as error:
+            # Convert worker-thread failures into a display update instead of
+            # leaving the user with an unchanged characteristic screen.
+            self._updates.put(
+                RuntimeFailed(
+                    operation="read",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+            return
+
+        self._updates.put(
+            CharacteristicRead(
+                service_uuid=service_uuid,
+                characteristic_uuid=characteristic_uuid,
+                value=value,
+            )
+        )
+    
     async def _connection_session(self, device_address: str) -> None:
         self._updates.put(
             ConnectionStarted(device_address=device_address)

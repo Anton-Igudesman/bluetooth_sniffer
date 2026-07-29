@@ -68,30 +68,68 @@ class GattClient:
     def _require_connected(self, operation: str) -> None:
         if not self._client.is_connected:
             raise RuntimeError(f"Cannot {operation} while disconnected")
-            
+    
+    def _get_characteristic(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+        *,
+        context: str,
+    ) -> BleakGATTCharacteristic:
+        # Scope lookup to the selected service because separate services may
+        # legally contain characteristics with the same UUID.
+        service = self._client.services.get_service(service_uuid)
+
+        if service is None:
+            raise ValueError(
+                f"{context}: service {service_uuid} was not found"
+            )
+
+        characteristic = service.get_characteristic(characteristic_uuid)
+
+        if characteristic is None:
+            raise ValueError(
+                f"{context}: characteristic {characteristic_uuid} was not found"
+            )
+
+        return characteristic
+           
     def _get_profile_characteristic(
         self,
         profile: ProtocolProfile,
         characteristic_uuid: str,
         role: str
     ) -> BleakGATTCharacteristic:
-        # Profile operations resolve RX or TX inside selected service
-        service = self._client.services.get_service(profile.service_uuid)
-        
-        if service is None:
+        # Profile operations still use the shared lookup, while this context
+        # identifies whether the missing characteristic was configured as RX or TX.
+        return self._get_characteristic(
+            profile.service_uuid,
+            characteristic_uuid,
+            context=f"{profile.name}: {role}",
+        )
+    
+    async def read_characteristic(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> bytes:
+        self._require_connected("read a characteristic")
+
+        characteristic = self._get_characteristic(
+            service_uuid,
+            characteristic_uuid,
+            context="GATT read",
+        )
+
+        # Reject unsupported reads here so the touchscreen receives a useful
+        # explanation instead of exposing a lower-level BlueZ protocol error.
+        if "read" not in characteristic.properties:
             raise ValueError(
-                f"{profile.name}: service {profile.service_uuid} was not found"
+                f"Characteristic {characteristic_uuid} does not support reads"
             )
-            
-        characteristic = service.get_characteristic(characteristic_uuid)
-        
-        if characteristic is None:
-            raise ValueError(
-                f"{profile.name}: {role} characteristic"
-                f" {characteristic_uuid} was not found"
-            )
-            
-        return characteristic
+
+        value = await self._client.read_gatt_char(characteristic)
+        return bytes(value)
             
     def validate_profile(self, profile: ProtocolProfile) -> None:
         self._require_connected("validate a profile")

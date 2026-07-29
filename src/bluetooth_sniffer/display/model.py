@@ -18,6 +18,13 @@ class CorrelationSummary:
     event_count: int
     matched_count: int
     unmatched_count: int
+
+def decode_utf8(payload: bytes) -> str | None:
+    try:
+        # Only label the complete payload as text when every byte forms valid UTF-8.
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
     
 @dataclass(frozen=True)
 class CorrelationEvent:
@@ -34,11 +41,7 @@ class CorrelationEvent:
     
     @property
     def payload_text(self) -> str | None:
-        try:
-            # Display text only when complete payload is valid UTF-8
-            return self.payload.decode("utf-8")
-        except UnicodeDecodeError:
-            return None
+        return decode_utf8(self.payload)
         
 @dataclass(frozen=True)
 class CorrelationReport:

@@ -2,7 +2,12 @@ import argparse
 import tkinter as tk
 from pathlib import Path
 
-from .model import CorrelationReport, load_correlation_report
+from .model import (
+    CorrelationReport,
+    decode_utf8,
+    load_correlation_report,
+)
+    
 from ..scanner import DEFAULT_SCAN_DURATION_SECONDS
 from ..gatt_client import (
     GattCharacteristicSnapshot,
@@ -10,6 +15,7 @@ from ..gatt_client import (
 )
 
 from .live_runtime import (
+    CharacteristicRead,
     ConnectionClosed,
     ConnectionStarted,
     GattDiscovered,
@@ -80,6 +86,14 @@ class CorrelationDashboard:
         self.gatt_services_list: tk.Listbox | None = None
         self.selected_gatt_service: GattServiceSnapshot | None = None
         self.gatt_characteristics_list: tk.Listbox | None = None
+        self.selected_gatt_characteristic: (
+            GattCharacteristicSnapshot | None
+        ) = None
+        
+        # Preserve the latest read result through async BLE ops
+        self.gatt_read_status_text = "NO VALUE READ"
+        self.gatt_read_status_color = MUTED_TEXT_COLOR
+        self.gatt_read_status_label: tk.Label | None = None
         
         self.connection_status_text = "DISCONNECTED"
         self.connection_status_color = MUTED_TEXT_COLOR
@@ -120,6 +134,7 @@ class CorrelationDashboard:
         self.connection_status_label = None
         self.gatt_services_list = None
         self.gatt_characteristics_list = None
+        self.gatt_read_status_label = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -553,6 +568,7 @@ class CorrelationDashboard:
     def _build_gatt_service(self, service: GattServiceSnapshot) -> None:
         self._clear_screen()
         
+        self.selected_gatt_characteristic = None
         self.selected_gatt_service = service
 
         container = tk.Frame(
@@ -682,6 +698,16 @@ class CorrelationDashboard:
         characteristic: GattCharacteristicSnapshot,
     ) -> None:
         self._clear_screen()
+        
+        self.selected_gatt_service = service
+        self.selected_gatt_characteristic = characteristic
+
+        if "read" in characteristic.properties:
+            self.gatt_read_status_text = "READY TO READ"
+            self.gatt_read_status_color = MUTED_TEXT_COLOR
+        else:
+            self.gatt_read_status_text = "READ NOT SUPPORTED"
+            self.gatt_read_status_color = MUTED_TEXT_COLOR
 
         container = tk.Frame(
             self.root,
@@ -742,6 +768,18 @@ class CorrelationDashboard:
             justify="left",
         ).pack(fill="x", pady=(0, 4))
 
+        self.gatt_read_status_label = tk.Label(
+            container,
+            text=self.gatt_read_status_text,
+            background=BACKGROUND_COLOR,
+            foreground=self.gatt_read_status_color,
+            font=("DejaVu Sans Mono", 8),
+            wraplength=450,
+            justify="left",
+            anchor="w",
+        )
+        self.gatt_read_status_label.pack(fill="x", pady=(0, 4))
+        
         tk.Label(
             container,
             text=f"DESCRIPTORS ({len(characteristic.descriptors)})",
@@ -785,12 +823,26 @@ class CorrelationDashboard:
 
         tk.Button(
             actions,
+            text="READ",
+            command=self._start_gatt_read,
+            state=(
+                "normal"
+                if "read" in characteristic.properties
+                else "disabled"
+            ),
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+        
+        tk.Button(
+            actions,
             text="BACK",
             command=lambda: self._build_gatt_service(service),
             font=("DejaVu Sans", 9, "bold"),
             padx=12,
             pady=3,
-        ).pack(side="left")
+        ).pack(side="left", padx=(8, 0))
 
         tk.Button(
             actions,
@@ -809,6 +861,40 @@ class CorrelationDashboard:
             padx=12,
             pady=3,
         ).pack(side="right")
+    
+    def _start_gatt_read(self) -> None:
+        service = self.selected_gatt_service
+        characteristic = self.selected_gatt_characteristic
+
+        if service is None or characteristic is None:
+            return
+
+        self.gatt_read_status_text = "READING..."
+        self.gatt_read_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_read_status()
+
+        try:
+            self.live_runtime.start_characteristic_read(
+                service.uuid,
+                characteristic.uuid,
+            )
+        except (RuntimeError, ValueError) as error:
+            self.gatt_read_status_text = f"READ FAILED: {error}"
+            self.gatt_read_status_color = WARNING_COLOR
+            self._render_gatt_read_status()
+
+    def _render_gatt_read_status(self) -> None:
+        status_label = self.gatt_read_status_label
+
+        # A read may finish after the user navigates away; retain its result
+        # without trying to update a characteristic widget that no longer exists.
+        if status_label is None:
+            return
+
+        status_label.configure(
+            text=self.gatt_read_status_text,
+            foreground=self.gatt_read_status_color,
+        )
     
     def _leave_live_connection(self) -> None:
         if self.connection_session_finished:
@@ -900,6 +986,33 @@ class CorrelationDashboard:
                 self.connection_failed = False
                 self._build_gatt_services()
 
+            elif isinstance(update, CharacteristicRead):
+                service = self.selected_gatt_service
+                characteristic = self.selected_gatt_characteristic
+
+                if (
+                    service is not None
+                    and characteristic is not None
+                    and service.uuid == update.service_uuid
+                    and characteristic.uuid == update.characteristic_uuid
+                ):
+                    payload_hex = update.value.hex(" ") or "<empty>"
+                    decoded_text = decode_utf8(update.value)
+                    payload_text = (
+                        repr(decoded_text)
+                        if decoded_text is not None
+                        else "not valid UTF-8"
+                    )
+
+                    # Limit both representations so an unusually large value
+                    # cannot push the touchscreen controls off the 320-pixel display.
+                    self.gatt_read_status_text = (
+                        f"HEX {self._shorten(payload_hex, 80)}\n"
+                        f"UTF-8 {self._shorten(payload_text, 48)}"
+                    )
+                    self.gatt_read_status_color = SUCCESS_COLOR
+                    self._render_gatt_read_status()
+            
             elif isinstance(update, RuntimeFailed):
                 if update.operation == "scan":
                     self.live_status_text = (
@@ -907,6 +1020,14 @@ class CorrelationDashboard:
                     )
                     self.live_status_color = WARNING_COLOR
                     scan_state_changed = True
+                elif update.operation == "read":
+                    # A rejected attribute read does not necessarily mean the
+                    # BLE connection failed, so keep the GATT browser available.
+                    self.gatt_read_status_text = (
+                        f"READ FAILED: {update.error_type}: {update.message}"
+                    )
+                    self.gatt_read_status_color = WARNING_COLOR
+                    self._render_gatt_read_status()
                 else:
                     self.connection_status_text = (
                         f"{update.operation.upper()} FAILED: "
