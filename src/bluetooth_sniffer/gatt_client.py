@@ -30,6 +30,28 @@ class GattCharacteristicMapping:
     
     properties: tuple[str, ...]
 
+@dataclass(frozen=True)
+class GattDescriptorSnapshot:
+    uuid: str
+    description: str
+    handle: int
+
+@dataclass(frozen=True)
+class GattCharacteristicSnapshot:
+    uuid: str
+    description: str
+    declaration_handle: int
+    value_handle: int
+    properties: tuple[str, ...]
+    descriptors: tuple[GattDescriptorSnapshot, ...]
+
+@dataclass(frozen=True)
+class GattServiceSnapshot:
+    uuid: str
+    description: str
+    handle: int
+    characteristics: tuple[GattCharacteristicSnapshot, ...]
+
 # Keep a connection w/ BleakClient alive across inspection/read/write
 class GattClient:
     def __init__(self, device: BLEDevice) -> None:
@@ -161,50 +183,84 @@ class GattClient:
             # Remove TX subscription before the outer connection cleanup runs
             await self._client.stop_notify(characteristic)
     
+    def gatt_snapshot(self) -> tuple[GattServiceSnapshot, ...]:
+        self._require_connected("inspect the GATT database")
+
+        # Convert connection-owned Bleak objects into plain values that the
+        # background runtime can safely deliver to the touchscreen thread.
+        return tuple(
+            GattServiceSnapshot(
+                uuid=service.uuid,
+                description=service.description,
+                handle=service.handle,
+                characteristics=tuple(
+                    GattCharacteristicSnapshot(
+                        uuid=characteristic.uuid,
+                        description=characteristic.description,
+                        declaration_handle=characteristic.handle,
+
+                        # Passive ATT operations use the value attribute after
+                        # this declaration, so the browser must expose both.
+                        value_handle=characteristic.handle + 1,
+                        properties=tuple(characteristic.properties),
+                        descriptors=tuple(
+                            GattDescriptorSnapshot(
+                                uuid=descriptor.uuid,
+                                description=descriptor.description,
+                                handle=descriptor.handle,
+                            )
+                            for descriptor in characteristic.descriptors
+                        ),
+                    )
+                    for characteristic in service.characteristics
+                ),
+            )
+            for service in self._client.services
+        )
+    
     def characteristic_mappings(
         self,
     ) -> list[GattCharacteristicMapping]:
-        self._require_connected("inspect GATT mappings")
-        
-        mappings: list[GattCharacteristicMapping] = []
-        
-        """
-            Handles belong to current peripheral db
-            Capture new UUID-to-handle for every connection
-        """
-        for service in self._client.services:
-            for characteristic in service.characteristics:
-                mappings.append(
-                    GattCharacteristicMapping(
-                        service_uuid=service.uuid,
-                        service_handle=service.handle,
-                        characteristic_uuid=characteristic.uuid,
-                        declaration_handle=characteristic.handle,
-                        value_handle=characteristic.handle + 1,
-                        properties=tuple(characteristic.properties),
-                    )
-                )
-                
-        return mappings
+        # Correlation needs a reduced view of the same GATT snapshot shown by
+        # the browser, keeping handle interpretation consistent in both paths.
+        return [
+            GattCharacteristicMapping(
+                service_uuid=service.uuid,
+                service_handle=service.handle,
+                characteristic_uuid=characteristic.uuid,
+                declaration_handle=characteristic.declaration_handle,
+                value_handle=characteristic.value_handle,
+                properties=characteristic.properties,
+            )
+            for service in self.gatt_snapshot()
+            for characteristic in service.characteristics
+        ]
            
     def print_services(self) -> None:
-        self._require_connected("inspect GATT services")
-        
-        # Service collection only available during connection
-        for service in self._client.services:
+        # Terminal inspection and the touchscreen now describe the same
+        # immutable snapshot rather than interpreting Bleak objects separately.
+        for service in self.gatt_snapshot():
             print(f"\nService: {service.description}")
             print(f"    UUID: {service.uuid}")
             print(f"    Handle: {service.handle}")
-            
+
             for characteristic in service.characteristics:
                 properties = ", ".join(characteristic.properties)
-                
-                print(f"    Characteristic: {characteristic.description}")
+
+                print(
+                    f"    Characteristic: {characteristic.description}"
+                )
                 print(f"        UUID: {characteristic.uuid}")
-                print(f"        Handle: {characteristic.handle}")
+                print(
+                    "        Declaration Handle:"
+                    f" {characteristic.declaration_handle}"
+                )
+                print(
+                    f"        Value Handle: {characteristic.value_handle}"
+                )
                 print(f"        Properties: {properties}")
-                
+
                 for descriptor in characteristic.descriptors:
                     print(f"        Descriptor: {descriptor.description}")
                     print(f"            UUID: {descriptor.uuid}")
-                    print(f"            Handle: {descriptor.handle}")
+                    print(f"            Handle: {descriptor.handle}")    
