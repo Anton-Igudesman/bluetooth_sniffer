@@ -159,6 +159,15 @@ class CorrelationDashboard:
 
         tk.Button(
             actions,
+            text="DETAILS",
+            command=self._open_selected_live_device,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
+        
+        tk.Button(
+            actions,
             text="BACK",
             command=self._build_summary,
             font=("DejaVu Sans", 9, "bold"),
@@ -177,6 +186,114 @@ class CorrelationDashboard:
 
         self._render_live_scan()
 
+    def _open_selected_live_device(self) -> None:
+        devices_list = self.live_devices_list
+        
+        if devices_list is None:
+            return
+        
+        selected_indices = devices_list.curselection()
+        
+        if not selected_indices:
+            self.live_status_text = "SELECT A DEVICE FIRST"
+            self.live_status_color = WARNING_COLOR
+            self._render_live_scan()
+            return
+        
+        selected_index = selected_indices[0]
+        
+        # The Listbox rows and live_devices use RSSI-sorted order
+        if selected_index >= len(self.live_devices):
+            self.live_status_text = "THE SELECTED SCAN RESULT IS NO LONGER AVAILABLE"
+            self.live_status_color = WARNING_COLOR
+            self._render_live_scan()
+            return
+        
+        self._build_live_device(self.live_devices[selected_index])
+        
+    def _build_live_device(self, device: LiveDevice) -> None:
+        self._clear_screen()
+        
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+        
+        tk.Label(
+            container,
+            text=self._shorten(device.name, 36),
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 13, "bold"),
+        ).pack(pady=(0, 3))
+
+        tk.Label(
+            container,
+            text=device.address,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 10),
+        ).pack()
+
+        tk.Label(
+            container,
+            text=f"SIGNAL {device.rssi} dBm",
+            background=BACKGROUND_COLOR,
+            foreground=SUCCESS_COLOR,
+            font=("DejaVu Sans", 10, "bold"),
+        ).pack(pady=(5, 7))
+
+        tk.Label(
+            container,
+            text="ADVERTISED SERVICE UUIDS",
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+
+        services_list = tk.Listbox(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            height=6,
+            activestyle="none",
+        )
+        services_list.pack(fill="both", expand=True, pady=(3, 7))
+
+        if device.service_uuids:
+            for service_uuid in device.service_uuids:
+                services_list.insert(tk.END, service_uuid)
+        else:
+            # Advertisements may omit UUIDs even when the device has GATT
+            # services; the later connection step must discover the real table.
+            services_list.insert(tk.END, "None included in advertisement")
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x")
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=self._build_live_scan,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=self._close,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="right")
+    
     def _start_live_scan(self) -> None:
         if not self.live_runtime_started:
             try:
