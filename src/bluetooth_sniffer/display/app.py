@@ -142,6 +142,7 @@ class CorrelationDashboard:
             font=("DejaVu Sans Mono", 8),
             height=10,
             activestyle="none",
+            exportselection=False,
         )
         self.live_devices_list.pack(fill="both", expand=True)
 
@@ -339,8 +340,9 @@ class CorrelationDashboard:
         # This scheduled callback is now executing, so another callback may be
         # registered without creating two simultaneous polling loops.
         self.poll_job = None
-
-        for update in self.live_runtime.drain_updates():
+        updates = self.live_runtime.drain_updates()
+        
+        for update in updates:
             if isinstance(update, ScanStarted):
                 self.live_status_text = (
                     f"SCANNING FOR {update.duration_seconds:g} SECONDS"
@@ -360,7 +362,10 @@ class CorrelationDashboard:
                 )
                 self.live_status_color = WARNING_COLOR
 
-        self._render_live_scan()
+        # Redraw only when runtime has supplied new scan state
+        if updates:
+            self._render_live_scan()
+        
         self._schedule_live_poll()
 
     def _render_live_scan(self) -> None:
