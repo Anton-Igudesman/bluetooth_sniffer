@@ -13,6 +13,8 @@ type NotificationHandler = Callable[
     None,
 ]
 
+type DisconnectedHandler = Callable[[], None]
+
 """
     Links each characteristic UUID to the temp ATT handle used during
     the same connection, allows Nordic packets to identify the correct characteristic
@@ -54,9 +56,21 @@ class GattServiceSnapshot:
 
 # Keep a connection w/ BleakClient alive across inspection/read/write
 class GattClient:
-    def __init__(self, device: BLEDevice) -> None:
+    def __init__(
+        self,
+        device: BLEDevice,
+        disconnected_handler: DisconnectedHandler | None = None
+    ) -> None:
         self.device = device
-        self._client = BleakClient(device)
+        
+        def handle_disconnect(_client: BleakClient) -> None:
+            # End runtime session when peripheral drops BLE link
+            if disconnected_handler is not None:
+                disconnected_handler()
+        self._client = BleakClient(
+            device,
+            disconnected_callback=handle_disconnect,
+        )
         
     async def connect(self) -> None:
         await self._client.connect()

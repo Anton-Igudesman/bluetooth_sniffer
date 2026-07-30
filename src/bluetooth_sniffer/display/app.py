@@ -1040,17 +1040,22 @@ class CorrelationDashboard:
             elif isinstance(update, ConnectionClosed):
                 self.connection_session_finished = True
 
-                if (
-                    self.return_to_scan_after_disconnect
-                    and not self.connection_failed
-                ):
+                if not self.connection_failed:
+                    disconnected_unexpectedly = (
+                        not self.return_to_scan_after_disconnect
+                    )
                     self.return_to_scan_after_disconnect = False
+                    self.connection_status_text = "DISCONNECTED"
+                    self.connection_status_color = MUTED_TEXT_COLOR
+
+                    if disconnected_unexpectedly:
+                        self.live_status_text = "DEVICE DISCONNECTED"
+                        self.live_status_color = WARNING_COLOR
+
+                    # Connection-owned handles cannot be used after disconnect,
+                    # so remove their cached screens before another operation is attempted.
                     self._build_live_scan()
                 else:
-                    if not self.connection_failed:
-                        self.connection_status_text = "DISCONNECTED"
-                        self.connection_status_color = MUTED_TEXT_COLOR
-
                     self._render_connection_status()
 
         # Redrawing scan rows removes their selected state, so only scan

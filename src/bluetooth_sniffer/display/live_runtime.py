@@ -304,12 +304,18 @@ class LiveRuntime:
                 )
 
             device, _advertisement = scan_result
-            client = GattClient(device)
+            disconnect_event = asyncio.Event()
+            
+            # Manual and peripheral-initiated disconnects release the same
+            client = GattClient(
+                device,
+                disconnected_handler=disconnect_event.set,
+            )
             await client.connect()
             connected = True
 
             self._gatt_client = client
-            self._disconnect_event = asyncio.Event()
+            self._disconnect_event = disconnect_event
 
             # Discovery happens on the Bleak worker loop; Tk receives only the
             # immutable snapshot and never accesses live BlueZ objects.
