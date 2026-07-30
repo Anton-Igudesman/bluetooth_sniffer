@@ -1724,6 +1724,19 @@ class CorrelationDashboard:
 
                     # Connection-owned handles cannot be used after disconnect,
                     # so remove their cached screens before another operation is attempted.
+                    self.gatt_services = ()
+
+                    # A disconnected device may have changed address or stopped
+                    # advertising, so do not offer connection from the old scan.
+                    self.live_devices = ()
+                    self.live_status_text = (
+                        "DEVICE DISCONNECTED — RUN A NEW SCAN"
+                    )
+                    self.live_status_color = WARNING_COLOR
+                    self._build_live_scan()
+                    
+                    # Connection-owned handles cannot be used after disconnect,
+                    # so remove their cached screens before another operation is attempted.
                     self._build_live_scan()
                 else:
                     self._render_connection_status()
