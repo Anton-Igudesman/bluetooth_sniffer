@@ -180,6 +180,50 @@ class GattClient:
             data,
             response=with_response,
         )
+    
+    async def subscribe_characteristic(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+        handler: NotificationHandler,
+    ) -> None:
+        self._require_connected("subscribe to a characteristic")
+
+        characteristic = self._get_characteristic(
+            service_uuid,
+            characteristic_uuid,
+            context="GATT subscription",
+        )
+
+        # Bleak uses the same subscription API for notifications and
+        # indications, so either discovered property makes this operation valid.
+        if not any(
+            property_name in characteristic.properties
+            for property_name in ("notify", "indicate")
+        ):
+            raise ValueError(
+                f"Characteristic {characteristic_uuid} does not support "
+                "notifications or indications"
+            )
+
+        # Bleak keeps this callback registered after start_notify returns;
+        # incoming values continue until we explicitly unsubscribe or disconnect.
+        await self._client.start_notify(characteristic, handler)
+
+    async def unsubscribe_characteristic(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        self._require_connected("unsubscribe from a characteristic")
+
+        characteristic = self._get_characteristic(
+            service_uuid,
+            characteristic_uuid,
+            context="GATT subscription",
+        )
+
+        await self._client.stop_notify(characteristic)
                 
     def validate_profile(self, profile: ProtocolProfile) -> None:
         self._require_connected("validate a profile")
@@ -231,27 +275,24 @@ class GattClient:
         duration_seconds: float,
         handler: NotificationHandler,
     ) -> None:
-        self._require_connected("listen")
-        
-        characteristic = self._get_profile_characteristic(
-            profile,
+        # The profile selects NUS TX, while the shared subscription method
+        # performs the same lookup and property validation used by the live UI.
+        await self.subscribe_characteristic(
+            profile.service_uuid,
             profile.tx_uuid,
-            "TX",
+            handler,
         )
-        
-        if "notify" not in characteristic.properties:
-            raise ValueError(
-                f"{profile.name}: TX characteristic does not support notifications"
-            )
-        
-        await self._client.start_notify(characteristic, handler)
-        
+
         try:
-            # Keep the event loop available while Bleak delivers TX notifications
+            # Timed listening belongs to the CLI workflow; the generic
+            # subscription remains active while this coroutine sleeps.
             await asyncio.sleep(duration_seconds)
         finally:
-            # Remove TX subscription before the outer connection cleanup runs
-            await self._client.stop_notify(characteristic)
+            # Always remove the callback when the requested listening period ends.
+            await self.unsubscribe_characteristic(
+                profile.service_uuid,
+                profile.tx_uuid,
+            )
     
     def gatt_snapshot(self) -> tuple[GattServiceSnapshot, ...]:
         self._require_connected("inspect the GATT database")

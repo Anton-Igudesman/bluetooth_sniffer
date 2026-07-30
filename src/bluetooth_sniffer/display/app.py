@@ -17,6 +17,9 @@ from ..gatt_client import (
 from .live_runtime import (
     CharacteristicRead,
     CharacteristicWritten,
+    CharacteristicValueReceived,
+    NotificationSubscriptionStarted,
+    NotificationSubscriptionStopped,
     ConnectionClosed,
     ConnectionStarted,
     GattDiscovered,
@@ -106,6 +109,15 @@ class CorrelationDashboard:
         self.gatt_write_mode_label: tk.Label | None = None
         self.gatt_write_status_label: tk.Label | None = None
         
+        # Keep one active subscription and a bounded value history while the
+        # user moves between the monitor and the surrounding GATT browser.
+        self.gatt_monitor_target: tuple[str, str] | None = None
+        self.gatt_monitor_events: list[CharacteristicValueReceived] = []
+        self.gatt_monitor_status_text = "NOT SUBSCRIBED"
+        self.gatt_monitor_status_color = MUTED_TEXT_COLOR
+        self.gatt_monitor_status_label: tk.Label | None = None
+        self.gatt_monitor_values_text: tk.Text | None = None
+        
         self.connection_status_text = "DISCONNECTED"
         self.connection_status_color = MUTED_TEXT_COLOR
         self.connection_status_label: tk.Label | None = None
@@ -151,6 +163,8 @@ class CorrelationDashboard:
         self.gatt_write_value_label = None
         self.gatt_write_mode_label = None
         self.gatt_write_status_label = None
+        self.gatt_monitor_status_label = None
+        self.gatt_monitor_values_text = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -834,11 +848,13 @@ class CorrelationDashboard:
         # operations are added separately according to characteristic properties.
         descriptors_text.configure(state="disabled")
 
-        actions = tk.Frame(container, background=BACKGROUND_COLOR)
-        actions.pack(fill="x")
+        # Keep attribute operations separate from navigation so the monitor
+        # control remains touchable within the Waveshare screen's 480-pixel width.
+        operations = tk.Frame(container, background=BACKGROUND_COLOR)
+        operations.pack(fill="x", pady=(0, 3))
 
         tk.Button(
-            actions,
+            operations,
             text="READ",
             command=self._start_gatt_read,
             state=(
@@ -850,9 +866,9 @@ class CorrelationDashboard:
             padx=12,
             pady=3,
         ).pack(side="left")
-        
+
         tk.Button(
-            actions,
+            operations,
             text="WRITE",
             command=self._build_gatt_write,
             state=(
@@ -870,18 +886,38 @@ class CorrelationDashboard:
             padx=12,
             pady=3,
         ).pack(side="left", padx=(8, 0))
-        
+
         tk.Button(
-            actions,
-            text="BACK",
-            command=lambda: self._build_gatt_service(service),
+            operations,
+            text="MONITOR",
+            command=self._build_gatt_monitor,
+            state=(
+                "normal"
+                if any(
+                    property_name in characteristic.properties
+                    for property_name in ("notify", "indicate")
+                )
+                else "disabled"
+            ),
             font=("DejaVu Sans", 9, "bold"),
             padx=12,
             pady=3,
         ).pack(side="left", padx=(8, 0))
 
+        navigation = tk.Frame(container, background=BACKGROUND_COLOR)
+        navigation.pack(fill="x")
+
         tk.Button(
-            actions,
+            navigation,
+            text="BACK",
+            command=lambda: self._build_gatt_service(service),
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            navigation,
             text="DISCONNECT",
             command=self._leave_live_connection,
             font=("DejaVu Sans", 9, "bold"),
@@ -890,7 +926,7 @@ class CorrelationDashboard:
         ).pack(side="left", padx=8)
 
         tk.Button(
-            actions,
+            navigation,
             text="CLOSE",
             command=self._close,
             font=("DejaVu Sans", 9, "bold"),
@@ -1219,6 +1255,225 @@ class CorrelationDashboard:
             foreground=self.gatt_write_status_color,
         )
     
+    def _build_gatt_monitor(self) -> None:
+        service = self.selected_gatt_service
+        characteristic = self.selected_gatt_characteristic
+
+        if service is None or characteristic is None:
+            return
+
+        if not any(
+            property_name in characteristic.properties
+            for property_name in ("notify", "indicate")
+        ):
+            return
+
+        selected_target = (service.uuid, characteristic.uuid)
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=(
+                f"LIVE VALUES — "
+                f"{self._shorten(characteristic.description, 26)}"
+            ),
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 11, "bold"),
+        ).pack(pady=(0, 2))
+
+        tk.Label(
+            container,
+            text=characteristic.uuid,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            wraplength=450,
+        ).pack()
+
+        self.gatt_monitor_status_label = tk.Label(
+            container,
+            text=self.gatt_monitor_status_text,
+            background=BACKGROUND_COLOR,
+            foreground=self.gatt_monitor_status_color,
+            font=("DejaVu Sans", 8, "bold"),
+        )
+        self.gatt_monitor_status_label.pack(fill="x", pady=(4, 3))
+
+        self.gatt_monitor_values_text = tk.Text(
+            container,
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            wrap="char",
+            relief="flat",
+            padx=6,
+            pady=4,
+        )
+        self.gatt_monitor_values_text.pack(
+            fill="both",
+            expand=True,
+            pady=(0, 5),
+        )
+
+        actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        actions.pack(fill="x")
+
+        tk.Button(
+            actions,
+            text="START",
+            command=self._start_gatt_monitor,
+            state=(
+                "normal"
+                if self.gatt_monitor_target is None
+                else "disabled"
+            ),
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="STOP",
+            command=self._stop_gatt_monitor,
+            state=(
+                "normal"
+                if self.gatt_monitor_target == selected_target
+                else "disabled"
+            ),
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(6, 0))
+
+        tk.Button(
+            actions,
+            text="CLEAR",
+            command=self._clear_gatt_monitor,
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=6)
+
+        tk.Button(
+            actions,
+            text="BACK",
+            command=lambda: self._build_gatt_characteristic(
+                service,
+                characteristic,
+            ),
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left")
+
+        tk.Button(
+            actions,
+            text="DISCONNECT",
+            command=self._leave_live_connection,
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="right")
+
+        self._render_gatt_monitor()
+
+    def _start_gatt_monitor(self) -> None:
+        service = self.selected_gatt_service
+        characteristic = self.selected_gatt_characteristic
+
+        if service is None or characteristic is None:
+            return
+
+        # A new subscription begins a distinct value stream; old values should
+        # not appear to have come from the newly selected characteristic.
+        self.gatt_monitor_events = []
+        self.gatt_monitor_status_text = "SUBSCRIBING..."
+        self.gatt_monitor_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_monitor()
+
+        try:
+            self.live_runtime.start_characteristic_subscription(
+                service.uuid,
+                characteristic.uuid,
+            )
+        except (RuntimeError, ValueError) as error:
+            self.gatt_monitor_status_text = f"START FAILED: {error}"
+            self.gatt_monitor_status_color = WARNING_COLOR
+            self._render_gatt_monitor()
+
+    def _stop_gatt_monitor(self) -> None:
+        self.gatt_monitor_status_text = "STOPPING..."
+        self.gatt_monitor_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_monitor()
+
+        try:
+            self.live_runtime.stop_characteristic_subscription()
+        except (RuntimeError, ValueError) as error:
+            self.gatt_monitor_status_text = f"STOP FAILED: {error}"
+            self.gatt_monitor_status_color = WARNING_COLOR
+            self._render_gatt_monitor()
+
+    def _clear_gatt_monitor(self) -> None:
+        # CLEAR affects only the touchscreen history; it does not interrupt the
+        # active BlueZ subscription or stop new values from arriving.
+        self.gatt_monitor_events = []
+        self._render_gatt_monitor()
+
+    def _render_gatt_monitor(self) -> None:
+        status_label = self.gatt_monitor_status_label
+        values_text = self.gatt_monitor_values_text
+
+        if status_label is None or values_text is None:
+            return
+
+        status_label.configure(
+            text=self.gatt_monitor_status_text,
+            foreground=self.gatt_monitor_status_color,
+        )
+
+        values_text.configure(state="normal")
+        values_text.delete("1.0", tk.END)
+
+        if self.gatt_monitor_events:
+            for event in self.gatt_monitor_events:
+                timestamp = (
+                    event.timestamp.astimezone()
+                    .strftime("%H:%M:%S.%f")[:-3]
+                )
+                payload_hex = event.value.hex(" ") or "<empty>"
+                decoded_text = decode_utf8(event.value)
+                payload_text = (
+                    repr(decoded_text)
+                    if decoded_text is not None
+                    else "not valid UTF-8"
+                )
+
+                values_text.insert(
+                    tk.END,
+                    f"{timestamp}  {len(event.value)} BYTE(S)\n"
+                    f"HEX {self._shorten(payload_hex, 84)}\n"
+                    f"UTF-8 {self._shorten(payload_text, 64)}\n\n",
+                )
+        else:
+            values_text.insert(
+                tk.END,
+                "No values received yet.\n"
+                "START subscribes; the peripheral must then send a value.",
+            )
+
+        values_text.configure(state="disabled")
+        values_text.see(tk.END)
+    
     def _leave_live_connection(self) -> None:
         if self.connection_session_finished:
             self.return_to_scan_after_disconnect = False
@@ -1278,6 +1533,8 @@ class CorrelationDashboard:
         self.poll_job = None
         updates = self.live_runtime.drain_updates()
         scan_state_changed = False
+        monitor_values_changed = False
+        monitor_controls_changed = False
 
         for update in updates:
             if isinstance(update, ScanStarted):
@@ -1359,6 +1616,47 @@ class CorrelationDashboard:
                     self.gatt_write_status_color = SUCCESS_COLOR
                     self._render_gatt_write()
             
+            elif isinstance(
+                update,
+                NotificationSubscriptionStarted,
+            ):
+                self.gatt_monitor_target = (
+                    update.service_uuid,
+                    update.characteristic_uuid,
+                )
+                self.gatt_monitor_status_text = (
+                    f"MONITORING — "
+                    f"{len(self.gatt_monitor_events)} VALUE(S)"
+                )
+                self.gatt_monitor_status_color = SUCCESS_COLOR
+                monitor_controls_changed = True
+
+            elif isinstance(update, CharacteristicValueReceived):
+                self.gatt_monitor_events.append(update)
+
+                # Retain only the newest 50 values so a high-rate peripheral
+                # cannot grow memory and touchscreen redraw work indefinitely.
+                del self.gatt_monitor_events[:-50]
+
+                self.gatt_monitor_status_text = (
+                    f"MONITORING — "
+                    f"{len(self.gatt_monitor_events)} VALUE(S) RETAINED"
+                )
+                self.gatt_monitor_status_color = SUCCESS_COLOR
+                monitor_values_changed = True
+
+            elif isinstance(
+                update,
+                NotificationSubscriptionStopped,
+            ):
+                self.gatt_monitor_target = None
+                self.gatt_monitor_status_text = (
+                    f"STOPPED — "
+                    f"{len(self.gatt_monitor_events)} VALUE(S) RETAINED"
+                )
+                self.gatt_monitor_status_color = MUTED_TEXT_COLOR
+                monitor_controls_changed = True
+            
             elif isinstance(update, RuntimeFailed):
                 if update.operation == "scan":
                     self.live_status_text = (
@@ -1382,6 +1680,15 @@ class CorrelationDashboard:
                     )
                     self.gatt_write_status_color = WARNING_COLOR
                     self._render_gatt_write()
+                elif update.operation in ("subscribe", "unsubscribe"):
+                    # Subscription failures leave the BLE connection and GATT
+                    # browser usable, so report them only on the monitor page.
+                    self.gatt_monitor_status_text = (
+                        f"{update.operation.upper()} FAILED: "
+                        f"{update.error_type}: {update.message}"
+                    )
+                    self.gatt_monitor_status_color = WARNING_COLOR
+                    monitor_values_changed = True
                 else:
                     self.connection_status_text = (
                         f"{update.operation.upper()} FAILED: "
@@ -1393,6 +1700,12 @@ class CorrelationDashboard:
 
             elif isinstance(update, ConnectionClosed):
                 self.connection_session_finished = True
+                
+                self.gatt_monitor_target = None
+                self.gatt_monitor_status_text = (
+                    "NOT SUBSCRIBED — CONNECTION CLOSED"
+                )
+                self.gatt_monitor_status_color = MUTED_TEXT_COLOR
 
                 if not self.connection_failed:
                     disconnected_unexpectedly = (
@@ -1416,6 +1729,16 @@ class CorrelationDashboard:
         # updates are allowed to rebuild that Listbox.
         if scan_state_changed:
             self._render_live_scan()
+            
+        # Rebuild only when START/STOP button states changed; ordinary incoming
+        # values update the existing text widget without resetting the screen.
+        if (
+            monitor_controls_changed
+            and self.gatt_monitor_status_label is not None
+        ):
+            self._build_gatt_monitor()
+        elif monitor_values_changed:
+            self._render_gatt_monitor()
 
         self._schedule_live_poll()
 

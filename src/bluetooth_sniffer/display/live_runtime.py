@@ -4,6 +4,8 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Literal
 
+from datetime import UTC, datetime
+
 from concurrent.futures import Future
 
 from ..scanner import BluetoothScanner, ScanResults
@@ -47,6 +49,23 @@ class CharacteristicWritten:
     with_response: bool
 
 @dataclass(frozen=True)
+class NotificationSubscriptionStarted:
+    service_uuid: str
+    characteristic_uuid: str
+
+@dataclass(frozen=True)
+class CharacteristicValueReceived:
+    service_uuid: str
+    characteristic_uuid: str
+    timestamp: datetime
+    value: bytes
+
+@dataclass(frozen=True)
+class NotificationSubscriptionStopped:
+    service_uuid: str
+    characteristic_uuid: str
+
+@dataclass(frozen=True)
 class ConnectionClosed:
     device_address: str
     connection_opened: bool
@@ -59,6 +78,8 @@ class RuntimeFailed:
         "disconnect",
         "read",
         "write",
+        "subscribe",
+        "unsubscribe",
     ]
     error_type: str
     message: str
@@ -70,6 +91,9 @@ type LiveUpdate = (
     | GattDiscovered
     | CharacteristicRead
     | CharacteristicWritten
+    | NotificationSubscriptionStarted
+    | CharacteristicValueReceived
+    | NotificationSubscriptionStopped
     | ConnectionClosed
     | RuntimeFailed
 )
@@ -90,6 +114,10 @@ class LiveRuntime:
         self._disconnect_event: asyncio.Event | None = None
         
         self._gatt_operation_future: Future[None] | None = None
+        
+        # Track the actual subscribed UUIDs so STOP always targets the active
+        # callback even if the user navigates to another characteristic screen.
+        self._notification_target: tuple[str, str] | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -370,6 +398,120 @@ class LiveRuntime:
             )
         )
     
+    def start_characteristic_subscription(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        if self._notification_target is not None:
+            raise RuntimeError(
+                "Another characteristic subscription is already active"
+            )
+
+        loop, client = self._prepare_gatt_operation()
+        self._gatt_operation_future = asyncio.run_coroutine_threadsafe(
+            self._subscribe_characteristic(
+                client,
+                service_uuid,
+                characteristic_uuid,
+            ),
+            loop,
+        )
+
+    async def _subscribe_characteristic(
+        self,
+        client: GattClient,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        def handle_value(
+            _characteristic: object,
+            value: bytearray,
+        ) -> None:
+            # Copy Bleak's mutable bytearray before it crosses into Tk's queue;
+            # every displayed event must preserve the bytes received at that moment.
+            self._updates.put(
+                CharacteristicValueReceived(
+                    service_uuid=service_uuid,
+                    characteristic_uuid=characteristic_uuid,
+                    timestamp=datetime.now(UTC),
+                    value=bytes(value),
+                )
+            )
+
+        try:
+            await client.subscribe_characteristic(
+                service_uuid,
+                characteristic_uuid,
+                handle_value,
+            )
+        except Exception as error:
+            self._updates.put(
+                RuntimeFailed(
+                    operation="subscribe",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+            return
+
+        self._notification_target = (
+            service_uuid,
+            characteristic_uuid,
+        )
+        self._updates.put(
+            NotificationSubscriptionStarted(
+                service_uuid=service_uuid,
+                characteristic_uuid=characteristic_uuid,
+            )
+        )
+
+    def stop_characteristic_subscription(self) -> None:
+        target = self._notification_target
+
+        if target is None:
+            raise RuntimeError("No characteristic subscription is active")
+
+        loop, client = self._prepare_gatt_operation()
+        service_uuid, characteristic_uuid = target
+        self._gatt_operation_future = asyncio.run_coroutine_threadsafe(
+            self._unsubscribe_characteristic(
+                client,
+                service_uuid,
+                characteristic_uuid,
+            ),
+            loop,
+        )
+
+    async def _unsubscribe_characteristic(
+        self,
+        client: GattClient,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        try:
+            await client.unsubscribe_characteristic(
+                service_uuid,
+                characteristic_uuid,
+            )
+        except Exception as error:
+            self._updates.put(
+                RuntimeFailed(
+                    operation="unsubscribe",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+            return
+
+        self._notification_target = None
+        self._updates.put(
+            NotificationSubscriptionStopped(
+                service_uuid=service_uuid,
+                characteristic_uuid=characteristic_uuid,
+            )
+        )
+    
     async def _connection_session(self, device_address: str) -> None:
         self._updates.put(
             ConnectionStarted(device_address=device_address)
@@ -441,6 +583,10 @@ class LiveRuntime:
 
             self._gatt_client = None
             self._disconnect_event = None
+            
+            # BlueZ removes subscriptions when the connection closes; clear our
+            # matching state so the next device can create a new subscription.
+            self._notification_target = None
             
             # Tk needs a final update after success, failure, cancel
             # Whether to allow another scan/connection
