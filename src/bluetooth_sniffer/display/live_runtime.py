@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Literal
+from pathlib import Path
 
 from datetime import UTC, datetime
 
@@ -10,6 +11,7 @@ from concurrent.futures import Future
 
 from ..scanner import BluetoothScanner, ScanResults
 from ..gatt_client import GattClient, GattServiceSnapshot
+from ..nordic_capture import NordicCapture
 
 @dataclass(frozen=True)
 class LiveDevice:
@@ -25,7 +27,17 @@ class ScanStarted:
 @dataclass(frozen=True)
 class ScanCompleted:
     devices: tuple[LiveDevice, ...]
-    
+
+@dataclass(frozen=True)
+class CaptureStarted:
+    device_address: str
+    output_path: Path
+
+@dataclass(frozen=True)
+class CaptureCompleted:
+    device_address: str
+    output_path: Path
+   
 @dataclass(frozen=True)
 class ConnectionStarted:
     device_address: str
@@ -80,6 +92,7 @@ class RuntimeFailed:
         "write",
         "subscribe",
         "unsubscribe",
+        "capture",
     ]
     error_type: str
     message: str
@@ -87,6 +100,8 @@ class RuntimeFailed:
 type LiveUpdate = (
     ScanStarted
     | ScanCompleted
+    | CaptureStarted
+    | CaptureCompleted
     | ConnectionStarted
     | GattDiscovered
     | CharacteristicRead
@@ -240,11 +255,24 @@ class LiveRuntime:
         
         self._updates.put(ScanCompleted(devices=devices))
 
-    def start_connection(self, device_address: str) -> None:
+    def start_connection(
+        self,
+        device_address: str,
+        *,
+        capture_port: str | None = None,
+        capture_output_path: Path | None = None,
+    ) -> None:
         device_address = device_address.strip()
 
         if not device_address:
             raise ValueError("Device address must not be empty")
+        
+        # Starting capture without both values would either lose the PCAP or
+        # launch nrfutil without identifying the Nordic serial device.
+        if (capture_port is None) != (capture_output_path is None):
+            raise ValueError(
+                "Capture port and output path must be supplied together"
+            )
 
         loop = self._loop
 
@@ -263,7 +291,11 @@ class LiveRuntime:
             raise RuntimeError("A device connection is already open")
 
         self._connection_future = asyncio.run_coroutine_threadsafe(
-            self._connection_session(device_address),
+            self._connection_session(
+                device_address,
+                capture_port=capture_port,
+                capture_output_path=capture_output_path,
+                ),
             loop,
         )
 
@@ -512,18 +544,25 @@ class LiveRuntime:
             )
         )
     
-    async def _connection_session(self, device_address: str) -> None:
+    async def _connection_session(
+        self,
+        device_address: str,
+        *,
+        capture_port: str | None,
+        capture_output_path: Path | None,
+    ) -> None:
         self._updates.put(
             ConnectionStarted(device_address=device_address)
         )
 
         client: GattClient | None = None
+        nordic_capture: NordicCapture | None = None
         connected = False
+        capture_started = False
 
         try:
             # The UI passes an address from the same completed scan, allowing
-            # us to recover the original BLEDevice instead of reconnecting from
-            # a hardcoded or previously cached address.
+            # us to use the current BLEDevice rather than a stale saved address.
             scan_result = self._scan_results.get(device_address)
 
             if scan_result is None:
@@ -532,9 +571,42 @@ class LiveRuntime:
                 )
 
             device, _advertisement = scan_result
+
+            if (
+                capture_port is not None
+                and capture_output_path is not None
+            ):
+                nordic_capture = NordicCapture(
+                    capture_port,
+                    capture_output_path,
+                )
+
+                try:
+                    # Capture must begin before the Pi connects or the Nordic
+                    # dongle can miss the packet that establishes the data channels.
+                    await nordic_capture.start(device_address)
+                except Exception as error:
+                    self._updates.put(
+                        RuntimeFailed(
+                            operation="capture",
+                            error_type=type(error).__name__,
+                            message=str(error),
+                        )
+                    )
+                    return
+
+                capture_started = True
+                self._updates.put(
+                    CaptureStarted(
+                        device_address=device_address,
+                        output_path=capture_output_path,
+                    )
+                )
+
             disconnect_event = asyncio.Event()
-            
-            # Manual and peripheral-initiated disconnects release the same
+
+            # Touchscreen and peripheral disconnects set the same event so both
+            # paths finalize the BLE connection and Nordic PCAP exactly once.
             client = GattClient(
                 device,
                 disconnected_handler=disconnect_event.set,
@@ -555,9 +627,9 @@ class LiveRuntime:
                 )
             )
 
-            # Keep this coroutine and its GattClient alive for later attribute
-            # reads, writes, and notification subscriptions from the browser.
-            await self._disconnect_event.wait()
+            # Keep the client alive for touchscreen reads, writes, and
+            # notification subscriptions until either side disconnects.
+            await disconnect_event.wait()
 
         except Exception as error:
             self._updates.put(
@@ -581,15 +653,34 @@ class LiveRuntime:
                         )
                     )
 
+            # Stop capture after BLE cleanup so its PCAP includes the end of
+            # the connection instead of being truncated before disconnection.
+            if capture_started and nordic_capture is not None:
+                try:
+                    await nordic_capture.stop()
+                except Exception as error:
+                    self._updates.put(
+                        RuntimeFailed(
+                            operation="capture",
+                            error_type=type(error).__name__,
+                            message=str(error),
+                        )
+                    )
+                else:
+                    self._updates.put(
+                        CaptureCompleted(
+                            device_address=device_address,
+                            output_path=nordic_capture.output_path,
+                        )
+                    )
+
             self._gatt_client = None
             self._disconnect_event = None
-            
+
             # BlueZ removes subscriptions when the connection closes; clear our
             # matching state so the next device can create a new subscription.
             self._notification_target = None
-            
-            # Tk needs a final update after success, failure, cancel
-            # Whether to allow another scan/connection
+
             self._updates.put(
                 ConnectionClosed(
                     device_address=device_address,

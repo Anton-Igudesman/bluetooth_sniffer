@@ -1,6 +1,7 @@
 import argparse
 import tkinter as tk
 from pathlib import Path
+from datetime import UTC, datetime
 
 from .model import (
     CorrelationReport,
@@ -20,6 +21,8 @@ from .live_runtime import (
     CharacteristicValueReceived,
     NotificationSubscriptionStarted,
     NotificationSubscriptionStopped,
+    CaptureCompleted,
+    CaptureStarted,
     ConnectionClosed,
     ConnectionStarted,
     GattDiscovered,
@@ -53,8 +56,28 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_SCAN_DURATION_SECONDS,
         help="Live BLE scan duration in seconds (default: %(default)s)",
     )
+    parser.add_argument(
+        "--nordic-port",
+        help="Serial port for touchscreen-controlled Nordic capture",
+    )
+    parser.add_argument(
+        "--capture-directory",
+        type=Path,
+        help="Directory for PCAP files created by touchscreen sessions",
+    )
     
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    
+    # Capture needs both the Nordic device and an output location; accepting
+    # only one would leave the touchscreen unable to start a complete session.
+    if (arguments.nordic_port is None) != (
+        arguments.capture_directory is None
+    ):
+        parser.error(
+            "--nordic-port and --capture-directory must be supplied together"
+        )
+
+    return arguments
 
 class CorrelationDashboard:
     def __init__(
@@ -62,6 +85,8 @@ class CorrelationDashboard:
         root: tk.Tk,
         report: CorrelationReport,
         scan_duration_seconds: float,
+        nordic_port: str | None,
+        capture_directory: Path | None,
     ) -> None:
         self.root = root
         self.report = report
@@ -72,6 +97,17 @@ class CorrelationDashboard:
             )
             
         self.scan_duration_seconds = scan_duration_seconds
+        
+        # These remain optional so the report viewer can run on a computer
+        # without the Nordic dongle while the Pi can enable live capture.
+        self.nordic_port = nordic_port
+        self.capture_directory = capture_directory
+        
+        # These paths distinguish a capture that is currently writing from one
+        # that has been finalized and is safe to inspect with Wireshark.
+        self.active_capture_path: Path | None = None
+        self.completed_capture_path: Path | None = None
+        
         self.live_runtime = LiveRuntime()
         self.live_runtime_started = False
         self.poll_job: str | None = None
@@ -357,6 +393,22 @@ class CorrelationDashboard:
             pady=3,
         ).pack(side="left")
         
+        if (
+            self.nordic_port is not None
+            and self.capture_directory is not None
+        ):
+            tk.Button(
+                actions,
+                text="CAPTURE + CONNECT",
+                command=lambda: self._start_live_connection(
+                    device,
+                    with_capture=True,
+                ),
+                font=("DejaVu Sans", 8, "bold"),
+                padx=6,
+                pady=3,
+            ).pack(side="left", padx=(6, 0))
+        
         tk.Button(
             actions,
             text="BACK",
@@ -375,10 +427,45 @@ class CorrelationDashboard:
             pady=3,
         ).pack(side="right")
     
-    def _start_live_connection(self, device: LiveDevice) -> None:
+    def _start_live_connection(
+        self,
+        device: LiveDevice,
+        *,
+        with_capture: bool = False,
+    ) -> None:
+        capture_port: str | None = None
+        capture_output_path: Path | None = None
+
+        if with_capture:
+            if (
+                self.nordic_port is None
+                or self.capture_directory is None
+            ):
+                raise RuntimeError(
+                    "Nordic capture is not configured for this display"
+                )
+
+            # Timestamp and address make every touchscreen session a separate
+            # PCAP instead of overwriting evidence from an earlier connection.
+            timestamp = datetime.now(UTC).strftime(
+                "%Y%m%dT%H%M%S%fZ"
+            )
+            address_token = device.address.replace(":", "").lower()
+            capture_output_path = (
+                self.capture_directory
+                / f"touchscreen-{timestamp}-{address_token}.pcap"
+            )
+            capture_port = self.nordic_port
+
+        self.active_capture_path = None
+        self.completed_capture_path = None
         self.selected_live_device = device
         self.gatt_services = ()
-        self.connection_status_text = "CONNECTING AND DISCOVERING GATT"
+        self.connection_status_text = (
+            "STARTING PASSIVE CAPTURE"
+            if with_capture
+            else "CONNECTING AND DISCOVERING GATT"
+        )
         self.connection_status_color = MUTED_TEXT_COLOR
         self.connection_session_finished = False
         self.connection_failed = False
@@ -386,7 +473,11 @@ class CorrelationDashboard:
         self._build_connection_status()
 
         try:
-            self.live_runtime.start_connection(device.address)
+            self.live_runtime.start_connection(
+                device.address,
+                capture_port=capture_port,
+                capture_output_path=capture_output_path,
+            )
         except (RuntimeError, ValueError) as error:
             self.connection_status_text = f"CONNECTION FAILED: {error}"
             self.connection_status_color = WARNING_COLOR
@@ -510,7 +601,14 @@ class CorrelationDashboard:
 
         self.connection_status_label = tk.Label(
             container,
-            text=f"CONNECTED • {len(self.gatt_services)} SERVICES",
+            text=(
+                f"CONNECTED • {len(self.gatt_services)} SERVICES"
+                + (
+                    " • CAPTURING"
+                    if self.active_capture_path is not None
+                    else ""
+                )
+            ),
             background=BACKGROUND_COLOR,
             foreground=SUCCESS_COLOR,
             font=("DejaVu Sans", 9, "bold"),
@@ -1555,6 +1653,14 @@ class CorrelationDashboard:
                 self.live_status_color = SUCCESS_COLOR
                 scan_state_changed = True
 
+            elif isinstance(update, CaptureStarted):
+                self.active_capture_path = update.output_path
+                self.connection_status_text = (
+                    f"CAPTURE RUNNING — {update.output_path.name}"
+                )
+                self.connection_status_color = SUCCESS_COLOR
+                self._render_connection_status()
+            
             elif isinstance(update, ConnectionStarted):
                 self.connection_status_text = "CONNECTING AND DISCOVERING GATT"
                 self.connection_status_color = MUTED_TEXT_COLOR
@@ -1562,13 +1668,23 @@ class CorrelationDashboard:
 
             elif isinstance(update, GattDiscovered):
                 self.gatt_services = update.services
+                capture_status = (
+                    " • CAPTURING"
+                    if self.active_capture_path is not None
+                    else ""
+                )
                 self.connection_status_text = (
                     f"CONNECTED: DISCOVERED {len(update.services)} SERVICE(S)"
+                    f"{capture_status}"
                 )
                 self.connection_status_color = SUCCESS_COLOR
                 self.connection_failed = False
                 self._build_gatt_services()
 
+            elif isinstance(update, CaptureCompleted):
+                self.active_capture_path = None
+                self.completed_capture_path = update.output_path
+            
             elif isinstance(update, CharacteristicRead):
                 service = self.selected_gatt_service
                 characteristic = self.selected_gatt_characteristic
@@ -1667,6 +1783,16 @@ class CorrelationDashboard:
                     )
                     self.live_status_color = WARNING_COLOR
                     scan_state_changed = True
+                elif update.operation == "capture":
+                    # A failed Nordic process means this session did not create
+                    # a trustworthy passive PCAP, even if BLE itself still worked.
+                    self.connection_status_text = (
+                        f"CAPTURE FAILED: "
+                        f"{update.error_type}: {update.message}"
+                    )
+                    self.connection_status_color = WARNING_COLOR
+                    self.connection_failed = True
+                    self._render_connection_status()
                 elif update.operation == "read":
                     # A rejected attribute read does not necessarily mean the
                     # BLE connection failed, so keep the GATT browser available.
@@ -1729,14 +1855,17 @@ class CorrelationDashboard:
                     # A disconnected device may have changed address or stopped
                     # advertising, so do not offer connection from the old scan.
                     self.live_devices = ()
-                    self.live_status_text = (
-                        "DEVICE DISCONNECTED — RUN A NEW SCAN"
-                    )
-                    self.live_status_color = WARNING_COLOR
-                    self._build_live_scan()
-                    
-                    # Connection-owned handles cannot be used after disconnect,
-                    # so remove their cached screens before another operation is attempted.
+                    if self.completed_capture_path is not None:
+                        self.live_status_text = (
+                            "CAPTURE SAVED — "
+                            f"{self.completed_capture_path.name}"
+                        )
+                        self.live_status_color = SUCCESS_COLOR
+                    else:
+                        self.live_status_text = (
+                            "DEVICE DISCONNECTED — RUN A NEW SCAN"
+                        )
+                        self.live_status_color = WARNING_COLOR
                     self._build_live_scan()
                 else:
                     self._render_connection_status()
@@ -2017,7 +2146,13 @@ def run() -> None:
     report = load_correlation_report(arguments.report)
     
     root = tk.Tk()
-    CorrelationDashboard(root, report, arguments.scan_duration)
+    CorrelationDashboard(
+        root,
+        report,
+        arguments.scan_duration,
+        arguments.nordic_port,
+        arguments.capture_directory,
+    )
     root.mainloop()
     
 if __name__ == "__main__":
