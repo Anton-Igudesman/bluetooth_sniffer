@@ -16,6 +16,7 @@ from ..gatt_client import (
 
 from .live_runtime import (
     CharacteristicRead,
+    CharacteristicWritten,
     ConnectionClosed,
     ConnectionStarted,
     GattDiscovered,
@@ -95,6 +96,16 @@ class CorrelationDashboard:
         self.gatt_read_status_color = MUTED_TEXT_COLOR
         self.gatt_read_status_label: tk.Label | None = None
         
+        # Store entered nibbles separately from their spaced display so SEND
+        # always converts an exact sequence of hexadecimal bytes.
+        self.gatt_write_hex = ""
+        self.gatt_write_with_response = True
+        self.gatt_write_status_text = "ENTER HEX BYTES"
+        self.gatt_write_status_color = MUTED_TEXT_COLOR
+        self.gatt_write_value_label: tk.Label | None = None
+        self.gatt_write_mode_label: tk.Label | None = None
+        self.gatt_write_status_label: tk.Label | None = None
+        
         self.connection_status_text = "DISCONNECTED"
         self.connection_status_color = MUTED_TEXT_COLOR
         self.connection_status_label: tk.Label | None = None
@@ -131,10 +142,15 @@ class CorrelationDashboard:
         # Stop runtime updates from targeting widgets destroyed during navigation
         self.live_status_label = None
         self.live_devices_list = None
+        
         self.connection_status_label = None
+        
         self.gatt_services_list = None
         self.gatt_characteristics_list = None
         self.gatt_read_status_label = None
+        self.gatt_write_value_label = None
+        self.gatt_write_mode_label = None
+        self.gatt_write_status_label = None
         
         # Screen navigation replaces widgets but keeps the validated report in memory
         for widget in self.root.winfo_children():
@@ -837,6 +853,26 @@ class CorrelationDashboard:
         
         tk.Button(
             actions,
+            text="WRITE",
+            command=self._build_gatt_write,
+            state=(
+                "normal"
+                if any(
+                    property_name in characteristic.properties
+                    for property_name in (
+                        "write",
+                        "write-without-response",
+                    )
+                )
+                else "disabled"
+            ),
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
+        
+        tk.Button(
+            actions,
             text="BACK",
             command=lambda: self._build_gatt_service(service),
             font=("DejaVu Sans", 9, "bold"),
@@ -894,6 +930,293 @@ class CorrelationDashboard:
         status_label.configure(
             text=self.gatt_read_status_text,
             foreground=self.gatt_read_status_color,
+        )
+    
+    def _build_gatt_write(self) -> None:
+        service = self.selected_gatt_service
+        characteristic = self.selected_gatt_characteristic
+
+        if service is None or characteristic is None:
+            return
+
+        supports_with_response = "write" in characteristic.properties
+        supports_without_response = (
+            "write-without-response" in characteristic.properties
+        )
+
+        if not supports_with_response and not supports_without_response:
+            return
+
+        # Start each visit with a deliberate empty payload so an earlier
+        # characteristic's command cannot be sent to this selected handle.
+        self.gatt_write_hex = ""
+        self.gatt_write_with_response = supports_with_response
+        self.gatt_write_status_text = "ENTER HEX BYTES"
+        self.gatt_write_status_color = MUTED_TEXT_COLOR
+        self._clear_screen()
+
+        container = tk.Frame(
+            self.root,
+            background=BACKGROUND_COLOR,
+            padx=12,
+            pady=8,
+        )
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=f"WRITE — {self._shorten(characteristic.description, 28)}",
+            background=BACKGROUND_COLOR,
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans", 11, "bold"),
+        ).pack(pady=(0, 2))
+
+        tk.Label(
+            container,
+            text=characteristic.uuid,
+            background=BACKGROUND_COLOR,
+            foreground=MUTED_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 8),
+            wraplength=450,
+        ).pack()
+
+        self.gatt_write_value_label = tk.Label(
+            container,
+            text="PAYLOAD <empty>",
+            background="#161B22",
+            foreground=PRIMARY_TEXT_COLOR,
+            font=("DejaVu Sans Mono", 10, "bold"),
+            wraplength=440,
+            anchor="w",
+            justify="left",
+            padx=6,
+            pady=5,
+        )
+        self.gatt_write_value_label.pack(fill="x", pady=(5, 3))
+
+        self.gatt_write_mode_label = tk.Label(
+            container,
+            background=BACKGROUND_COLOR,
+            foreground=SUCCESS_COLOR,
+            font=("DejaVu Sans", 8, "bold"),
+        )
+        self.gatt_write_mode_label.pack(fill="x")
+
+        self.gatt_write_status_label = tk.Label(
+            container,
+            text=self.gatt_write_status_text,
+            background=BACKGROUND_COLOR,
+            foreground=self.gatt_write_status_color,
+            font=("DejaVu Sans", 8, "bold"),
+        )
+        self.gatt_write_status_label.pack(fill="x", pady=(1, 3))
+
+        keypad = tk.Frame(container, background=BACKGROUND_COLOR)
+        keypad.pack(fill="x")
+
+        for index, digit in enumerate("0123456789ABCDEF"):
+            # Capture this loop's digit now so each touch button appends its
+            # own value rather than every button appending the final "F".
+            tk.Button(
+                keypad,
+                text=digit,
+                command=lambda digit=digit: self._append_gatt_write_hex(
+                    digit
+                ),
+                font=("DejaVu Sans Mono", 9, "bold"),
+                width=3,
+                pady=2,
+            ).grid(
+                row=index // 8,
+                column=index % 8,
+                padx=2,
+                pady=2,
+            )
+
+        edit_actions = tk.Frame(container, background=BACKGROUND_COLOR)
+        edit_actions.pack(fill="x", pady=(3, 0))
+
+        tk.Button(
+            edit_actions,
+            text="BACKSPACE",
+            command=self._backspace_gatt_write_hex,
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=2,
+        ).pack(side="left")
+
+        tk.Button(
+            edit_actions,
+            text="CLEAR",
+            command=self._clear_gatt_write_hex,
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=2,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            edit_actions,
+            text="MODE",
+            command=self._toggle_gatt_write_mode,
+            state=(
+                "normal"
+                if supports_with_response and supports_without_response
+                else "disabled"
+            ),
+            font=("DejaVu Sans", 8, "bold"),
+            padx=8,
+            pady=2,
+        ).pack(side="left")
+        
+        navigation = tk.Frame(container, background=BACKGROUND_COLOR)
+        navigation.pack(side="bottom", fill="x")
+
+        tk.Button(
+            navigation,
+            text="SEND",
+            command=self._start_gatt_write,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left")
+        
+        tk.Button(
+            navigation,
+            text="BACK",
+            command=lambda: self._build_gatt_characteristic(
+                service,
+                characteristic,
+            ),
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
+
+        tk.Button(
+            navigation,
+            text="DISCONNECT",
+            command=self._leave_live_connection,
+            font=("DejaVu Sans", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=8)
+
+        self._render_gatt_write()
+
+    def _append_gatt_write_hex(self, digit: str) -> None:
+        # GATT writes with response are limited to 512 bytes, so the editor
+        # prevents input beyond 1,024 hexadecimal digits.
+        if len(self.gatt_write_hex) >= 1024:
+            self.gatt_write_status_text = "PAYLOAD LIMIT: 512 BYTES"
+            self.gatt_write_status_color = WARNING_COLOR
+            self._render_gatt_write()
+            return
+
+        self.gatt_write_hex += digit
+        self.gatt_write_status_text = "ENTER HEX BYTES"
+        self.gatt_write_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_write()
+
+    def _backspace_gatt_write_hex(self) -> None:
+        self.gatt_write_hex = self.gatt_write_hex[:-1]
+        self._render_gatt_write()
+
+    def _clear_gatt_write_hex(self) -> None:
+        self.gatt_write_hex = ""
+        self.gatt_write_status_text = "ENTER HEX BYTES"
+        self.gatt_write_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_write()
+        
+    def _toggle_gatt_write_mode(self) -> None:
+        characteristic = self.selected_gatt_characteristic
+
+        if characteristic is None:
+            return
+
+        supports_with_response = "write" in characteristic.properties
+        supports_without_response = (
+            "write-without-response" in characteristic.properties
+        )
+
+        # Mode changes are allowed only when the peripheral advertised both
+        # forms; selecting an unsupported mode would make BlueZ reject SEND.
+        if supports_with_response and supports_without_response:
+            self.gatt_write_with_response = (
+                not self.gatt_write_with_response
+            )
+
+        self._render_gatt_write()
+
+    def _start_gatt_write(self) -> None:
+        service = self.selected_gatt_service
+        characteristic = self.selected_gatt_characteristic
+
+        if service is None or characteristic is None:
+            return
+
+        if not self.gatt_write_hex:
+            self.gatt_write_status_text = "ENTER A PAYLOAD BEFORE SENDING"
+            self.gatt_write_status_color = WARNING_COLOR
+            self._render_gatt_write()
+            return
+
+        # Every byte requires two hexadecimal digits. An unfinished final
+        # digit cannot be converted into the exact byte payload sent over GATT.
+        if len(self.gatt_write_hex) % 2 != 0:
+            self.gatt_write_status_text = "INCOMPLETE BYTE: ADD ONE HEX DIGIT"
+            self.gatt_write_status_color = WARNING_COLOR
+            self._render_gatt_write()
+            return
+
+        payload = bytes.fromhex(self.gatt_write_hex)
+        self.gatt_write_status_text = "WRITING..."
+        self.gatt_write_status_color = MUTED_TEXT_COLOR
+        self._render_gatt_write()
+
+        try:
+            self.live_runtime.start_characteristic_write(
+                service.uuid,
+                characteristic.uuid,
+                payload,
+                with_response=self.gatt_write_with_response,
+            )
+        except (RuntimeError, ValueError) as error:
+            self.gatt_write_status_text = f"WRITE FAILED: {error}"
+            self.gatt_write_status_color = WARNING_COLOR
+            self._render_gatt_write()
+
+    def _render_gatt_write(self) -> None:
+        value_label = self.gatt_write_value_label
+        mode_label = self.gatt_write_mode_label
+        status_label = self.gatt_write_status_label
+
+        if (
+            value_label is None
+            or mode_label is None
+            or status_label is None
+        ):
+            return
+
+        grouped_hex = " ".join(
+            self.gatt_write_hex[index:index + 2]
+            for index in range(0, len(self.gatt_write_hex), 2)
+        )
+
+        value_label.configure(
+            text=f"PAYLOAD {self._shorten(grouped_hex, 96)}"
+            if grouped_hex
+            else "PAYLOAD <empty>"
+        )
+        mode_label.configure(
+            text=(
+                "MODE: WITH RESPONSE"
+                if self.gatt_write_with_response
+                else "MODE: WITHOUT RESPONSE"
+            )
+        )
+        status_label.configure(
+            text=self.gatt_write_status_text,
+            foreground=self.gatt_write_status_color,
         )
     
     def _leave_live_connection(self) -> None:
@@ -1013,6 +1336,29 @@ class CorrelationDashboard:
                     self.gatt_read_status_color = SUCCESS_COLOR
                     self._render_gatt_read_status()
             
+            elif isinstance(update, CharacteristicWritten):
+                service = self.selected_gatt_service
+                characteristic = self.selected_gatt_characteristic
+
+                # A write may finish after navigation. Only show its result when
+                # the open screen still represents the characteristic that received it.
+                if (
+                    service is not None
+                    and characteristic is not None
+                    and service.uuid == update.service_uuid
+                    and characteristic.uuid == update.characteristic_uuid
+                ):
+                    write_mode = (
+                        "WITH RESPONSE"
+                        if update.with_response
+                        else "WITHOUT RESPONSE"
+                    )
+                    self.gatt_write_status_text = (
+                        f"SENT {len(update.value)} BYTE(S) — {write_mode}"
+                    )
+                    self.gatt_write_status_color = SUCCESS_COLOR
+                    self._render_gatt_write()
+            
             elif isinstance(update, RuntimeFailed):
                 if update.operation == "scan":
                     self.live_status_text = (
@@ -1028,6 +1374,14 @@ class CorrelationDashboard:
                     )
                     self.gatt_read_status_color = WARNING_COLOR
                     self._render_gatt_read_status()
+                elif update.operation == "write":
+                    # A rejected write leaves the connection usable, allowing
+                    # the user to correct the payload or select another mode.
+                    self.gatt_write_status_text = (
+                        f"WRITE FAILED: {update.error_type}: {update.message}"
+                    )
+                    self.gatt_write_status_color = WARNING_COLOR
+                    self._render_gatt_write()
                 else:
                     self.connection_status_text = (
                         f"{update.operation.upper()} FAILED: "

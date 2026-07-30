@@ -144,7 +144,43 @@ class GattClient:
 
         value = await self._client.read_gatt_char(characteristic)
         return bytes(value)
-            
+    
+    async def write_characteristic(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+        data: bytes,
+        *,
+        with_response: bool,
+    ) -> None:
+        self._require_connected("write a characteristic")
+
+        characteristic = self._get_characteristic(
+            service_uuid,
+            characteristic_uuid,
+            context="GATT write",
+        )
+
+        required_property = (
+            "write" if with_response else "write-without-response"
+        )
+
+        # Match the requested mode to the discovered property before sending;
+        # otherwise BlueZ would receive a write type the peripheral did not offer.
+        if required_property not in characteristic.properties:
+            raise ValueError(
+                f"Characteristic {characteristic_uuid} does not support "
+                f"{required_property}"
+            )
+
+        # Pass the discovered object so duplicate characteristic UUIDs in
+        # separate services cannot direct the payload to the wrong handle.
+        await self._client.write_gatt_char(
+            characteristic,
+            data,
+            response=with_response,
+        )
+                
     def validate_profile(self, profile: ProtocolProfile) -> None:
         self._require_connected("validate a profile")
         
@@ -181,30 +217,12 @@ class GattClient:
         *, # with response must be named
         with_response: bool,
     ) -> None:
-        self._require_connected("write")
-            
-        characteristic = self._get_profile_characteristic(
-            profile,
+        # The NUS profile selects RX; generic write logic validates and sends it.
+        await self.write_characteristic(
+            profile.service_uuid,
             profile.rx_uuid,
-            "RX",
-        )
-            
-        # Bleak calls with-response property "write"
-        required_property = (
-            "write" if with_response else "write-without-response"
-        )
-        
-        if required_property not in characteristic.properties:
-            raise ValueError(
-                f"{profile.name}: RX characteristic does not support"
-                f" {required_property}"
-            )
-        
-        # Use characteristic discovered in connection including handle
-        await self._client.write_gatt_char(
-            characteristic,
             data,
-            response=with_response,
+            with_response=with_response,
         )
         
     async def listen_tx(

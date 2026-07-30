@@ -40,13 +40,26 @@ class CharacteristicRead:
     value: bytes
 
 @dataclass(frozen=True)
+class CharacteristicWritten:
+    service_uuid: str
+    characteristic_uuid: str
+    value: bytes
+    with_response: bool
+
+@dataclass(frozen=True)
 class ConnectionClosed:
     device_address: str
     connection_opened: bool
 
 @dataclass(frozen=True)
 class RuntimeFailed:
-    operation: Literal["scan", "connect", "disconnect", "read"]
+    operation: Literal[
+        "scan",
+        "connect",
+        "disconnect",
+        "read",
+        "write",
+    ]
     error_type: str
     message: str
 
@@ -56,6 +69,7 @@ type LiveUpdate = (
     | ConnectionStarted
     | GattDiscovered
     | CharacteristicRead
+    | CharacteristicWritten
     | ConnectionClosed
     | RuntimeFailed
 )
@@ -75,7 +89,7 @@ class LiveRuntime:
         self._gatt_client: GattClient | None = None
         self._disconnect_event: asyncio.Event | None = None
         
-        self._read_future: Future[None] | None = None
+        self._gatt_operation_future: Future[None] | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -225,11 +239,9 @@ class LiveRuntime:
             loop,
         )
 
-    def start_characteristic_read(
+    def _prepare_gatt_operation(
         self,
-        service_uuid: str,
-        characteristic_uuid: str,
-    ) -> None:
+    ) -> tuple[asyncio.AbstractEventLoop, GattClient]:
         loop = self._loop
         client = self._gatt_client
 
@@ -237,14 +249,30 @@ class LiveRuntime:
             raise RuntimeError("Live runtime is not running")
 
         if client is None:
-            raise RuntimeError("No connected device is available for reading")
+            raise RuntimeError(
+                "No connected device is available for a GATT operation"
+            )
 
-        if self._read_future is not None and not self._read_future.done():
-            raise RuntimeError("A characteristic read is already running")
+        # BlueZ should finish the current attribute request before another read
+        # or write is submitted through this connection.
+        if (
+            self._gatt_operation_future is not None
+            and not self._gatt_operation_future.done()
+        ):
+            raise RuntimeError("A GATT operation is already running")
+
+        return loop, client
+    
+    def start_characteristic_read(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+    ) -> None:
+        loop, client = self._prepare_gatt_operation()
 
         # Pass the active client into this task so the read stays tied to the
         # connection whose GATT hierarchy is currently shown on the touchscreen.
-        self._read_future = asyncio.run_coroutine_threadsafe(
+        self._gatt_operation_future = asyncio.run_coroutine_threadsafe(
             self._read_characteristic(
                 client,
                 service_uuid,
@@ -252,7 +280,7 @@ class LiveRuntime:
             ),
             loop,
         )
-
+        
     async def _read_characteristic(
         self,
         client: GattClient,
@@ -281,6 +309,64 @@ class LiveRuntime:
                 service_uuid=service_uuid,
                 characteristic_uuid=characteristic_uuid,
                 value=value,
+            )
+        )
+    
+    def start_characteristic_write(
+        self,
+        service_uuid: str,
+        characteristic_uuid: str,
+        value: bytes,
+        *,
+        with_response: bool,
+    ) -> None:
+        loop, client = self._prepare_gatt_operation()
+
+        self._gatt_operation_future = asyncio.run_coroutine_threadsafe(
+            self._write_characteristic(
+                client,
+                service_uuid,
+                characteristic_uuid,
+                value,
+                with_response=with_response,
+            ),
+            loop,
+        )
+
+    async def _write_characteristic(
+        self,
+        client: GattClient,
+        service_uuid: str,
+        characteristic_uuid: str,
+        value: bytes,
+        *,
+        with_response: bool,
+    ) -> None:
+        try:
+            await client.write_characteristic(
+                service_uuid,
+                characteristic_uuid,
+                value,
+                with_response=with_response,
+            )
+        except Exception as error:
+            # Report the rejected payload or mode without treating it as a
+            # connection failure; the user may choose another supported mode.
+            self._updates.put(
+                RuntimeFailed(
+                    operation="write",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+            return
+
+        self._updates.put(
+            CharacteristicWritten(
+                service_uuid=service_uuid,
+                characteristic_uuid=characteristic_uuid,
+                value=value,
+                with_response=with_response,
             )
         )
     
