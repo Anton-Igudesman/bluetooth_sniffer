@@ -1313,6 +1313,9 @@ class CorrelationDashboard:
             background="#161B22",
             foreground=PRIMARY_TEXT_COLOR,
             font=("DejaVu Sans Mono", 8),
+            
+            # Leave enough vertical space for monitor controls
+            height=6,
             wrap="char",
             relief="flat",
             padx=6,
