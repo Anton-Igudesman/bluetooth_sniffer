@@ -1,7 +1,6 @@
 import argparse
 import tkinter as tk
 from pathlib import Path
-from datetime import UTC, datetime
 
 from .model import (
     CorrelationReport,
@@ -32,6 +31,7 @@ from .live_runtime import (
     ScanCompleted,
     ScanStarted,
 )
+from .session import create_live_session_paths
 
 # Screen color palette
 BACKGROUND_COLOR = "#0B1117"
@@ -435,6 +435,7 @@ class CorrelationDashboard:
     ) -> None:
         capture_port: str | None = None
         capture_output_path: Path | None = None
+        event_log_path: Path | None = None
 
         if with_capture:
             if (
@@ -445,16 +446,22 @@ class CorrelationDashboard:
                     "Nordic capture is not configured for this display"
                 )
 
-            # Timestamp and address make every touchscreen session a separate
-            # PCAP instead of overwriting evidence from an earlier connection.
-            timestamp = datetime.now(UTC).strftime(
-                "%Y%m%dT%H%M%S%fZ"
-            )
-            address_token = device.address.replace(":", "").lower()
-            capture_output_path = (
-                self.capture_directory
-                / f"touchscreen-{timestamp}-{address_token}.pcap"
-            )
+            try:
+                session_paths = create_live_session_paths(
+                    self.capture_directory,
+                    device.address,
+                )
+            except OSError as error:
+                self.live_status_text = (
+                    f"SESSION DIRECTORY FAILED: "
+                    f"{type(error).__name__}: {error}"
+                )
+                self.live_status_color = WARNING_COLOR
+                self._build_live_scan()
+                return
+
+            capture_output_path = session_paths.pcap
+            event_log_path = session_paths.event_log
             capture_port = self.nordic_port
 
         self.active_capture_path = None
@@ -477,6 +484,7 @@ class CorrelationDashboard:
                 device.address,
                 capture_port=capture_port,
                 capture_output_path=capture_output_path,
+                event_log_path=event_log_path,
             )
         except (RuntimeError, ValueError) as error:
             self.connection_status_text = f"CONNECTION FAILED: {error}"
@@ -2157,4 +2165,3 @@ def run() -> None:
     
 if __name__ == "__main__":
     run()
-

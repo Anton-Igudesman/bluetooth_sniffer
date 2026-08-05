@@ -22,6 +22,7 @@ capture and the Waveshare interface remain later milestones.
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Development workflow and handoff](docs/workflow.md)
 
 ## Safety and authorization
 

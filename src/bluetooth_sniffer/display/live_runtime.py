@@ -12,6 +12,7 @@ from concurrent.futures import Future
 from ..scanner import BluetoothScanner, ScanResults
 from ..gatt_client import GattClient, GattServiceSnapshot
 from ..nordic_capture import NordicCapture
+from ..event_log import EventLogger
 
 @dataclass(frozen=True)
 class LiveDevice:
@@ -129,6 +130,7 @@ class LiveRuntime:
         self._disconnect_event: asyncio.Event | None = None
         
         self._gatt_operation_future: Future[None] | None = None
+        self._event_logger = EventLogger(None)
         
         # Track the actual subscribed UUIDs so STOP always targets the active
         # callback even if the user navigates to another characteristic screen.
@@ -261,6 +263,7 @@ class LiveRuntime:
         *,
         capture_port: str | None = None,
         capture_output_path: Path | None = None,
+        event_log_path: Path | None = None,
     ) -> None:
         device_address = device_address.strip()
 
@@ -269,9 +272,18 @@ class LiveRuntime:
         
         # Starting capture without both values would either lose the PCAP or
         # launch nrfutil without identifying the Nordic serial device.
-        if (capture_port is None) != (capture_output_path is None):
+        capture_values = (
+            capture_port,
+            capture_output_path,
+            event_log_path,
+        )
+
+        if any(value is not None for value in capture_values) and not all(
+            value is not None for value in capture_values
+        ):
             raise ValueError(
-                "Capture port and output path must be supplied together"
+                "Capture port, output path, and event log must be supplied "
+                "together"
             )
 
         loop = self._loop
@@ -295,6 +307,7 @@ class LiveRuntime:
                 device_address,
                 capture_port=capture_port,
                 capture_output_path=capture_output_path,
+                event_log_path=event_log_path,
                 ),
             loop,
         )
@@ -371,6 +384,13 @@ class LiveRuntime:
                 value=value,
             )
         )
+        self._event_logger.record(
+            "gatt.read",
+            service_uuid=service_uuid,
+            characteristic_uuid=characteristic_uuid,
+            payload_hex=value.hex(" "),
+            payload_size_bytes=len(value),
+        )
     
     def start_characteristic_write(
         self,
@@ -429,6 +449,18 @@ class LiveRuntime:
                 with_response=with_response,
             )
         )
+        self._event_logger.record(
+            "gatt.write",
+            service_uuid=service_uuid,
+            characteristic_uuid=characteristic_uuid,
+            payload_hex=value.hex(" "),
+            payload_size_bytes=len(value),
+            write_mode=(
+                "with-response"
+                if with_response
+                else "without-response"
+            ),
+        )
     
     def start_characteristic_subscription(
         self,
@@ -460,6 +492,16 @@ class LiveRuntime:
             _characteristic: object,
             value: bytearray,
         ) -> None:
+            payload = bytes(value)
+
+            self._event_logger.record(
+                "gatt.notification",
+                service_uuid=service_uuid,
+                characteristic_uuid=characteristic_uuid,
+                payload_hex=payload.hex(" "),
+                payload_size_bytes=len(payload),
+            )
+
             # Copy Bleak's mutable bytearray before it crosses into Tk's queue;
             # every displayed event must preserve the bytes received at that moment.
             self._updates.put(
@@ -467,7 +509,7 @@ class LiveRuntime:
                     service_uuid=service_uuid,
                     characteristic_uuid=characteristic_uuid,
                     timestamp=datetime.now(UTC),
-                    value=bytes(value),
+                    value=payload,
                 )
             )
 
@@ -490,6 +532,11 @@ class LiveRuntime:
         self._notification_target = (
             service_uuid,
             characteristic_uuid,
+        )
+        self._event_logger.record(
+            "gatt.subscription_started",
+            service_uuid=service_uuid,
+            characteristic_uuid=characteristic_uuid,
         )
         self._updates.put(
             NotificationSubscriptionStarted(
@@ -537,6 +584,11 @@ class LiveRuntime:
             return
 
         self._notification_target = None
+        self._event_logger.record(
+            "gatt.subscription_stopped",
+            service_uuid=service_uuid,
+            characteristic_uuid=characteristic_uuid,
+        )
         self._updates.put(
             NotificationSubscriptionStopped(
                 service_uuid=service_uuid,
@@ -550,7 +602,14 @@ class LiveRuntime:
         *,
         capture_port: str | None,
         capture_output_path: Path | None,
+        event_log_path: Path | None,
     ) -> None:
+        self._event_logger = EventLogger(event_log_path)
+        self._event_logger.record(
+            "session.started",
+            device_address=device_address,
+            capture_enabled=capture_output_path is not None,
+        )
         self._updates.put(
             ConnectionStarted(device_address=device_address)
         )
@@ -559,6 +618,7 @@ class LiveRuntime:
         nordic_capture: NordicCapture | None = None
         connected = False
         capture_started = False
+        session_failed = False
 
         try:
             # The UI passes an address from the same completed scan, allowing
@@ -586,6 +646,12 @@ class LiveRuntime:
                     # dongle can miss the packet that establishes the data channels.
                     await nordic_capture.start(device_address)
                 except Exception as error:
+                    session_failed = True
+                    self._event_logger.record(
+                        "session.failed",
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                    )
                     self._updates.put(
                         RuntimeFailed(
                             operation="capture",
@@ -596,6 +662,13 @@ class LiveRuntime:
                     return
 
                 capture_started = True
+                self._event_logger.record(
+                    "capture.started",
+                    capture_type="nordic_ble",
+                    device_address=device_address,
+                    serial_port=capture_port,
+                    output_path=str(capture_output_path),
+                )
                 self._updates.put(
                     CaptureStarted(
                         device_address=device_address,
@@ -613,6 +686,12 @@ class LiveRuntime:
             )
             await client.connect()
             connected = True
+            display_name = device.name or "Unknown"
+            self._event_logger.record(
+                "connection.opened",
+                device_name=display_name,
+                device_address=device_address,
+            )
 
             self._gatt_client = client
             self._disconnect_event = disconnect_event
@@ -620,6 +699,19 @@ class LiveRuntime:
             # Discovery happens on the Bleak worker loop; Tk receives only the
             # immutable snapshot and never accesses live BlueZ objects.
             services = client.gatt_snapshot()
+
+            for mapping in client.characteristic_mappings():
+                self._event_logger.record(
+                    "gatt.characteristic_mapped",
+                    device_address=device_address,
+                    service_uuid=mapping.service_uuid,
+                    service_handle=mapping.service_handle,
+                    characteristic_uuid=mapping.characteristic_uuid,
+                    declaration_handle=mapping.declaration_handle,
+                    value_handle=mapping.value_handle,
+                    properties=mapping.properties,
+                )
+
             self._updates.put(
                 GattDiscovered(
                     device_address=device_address,
@@ -631,7 +723,18 @@ class LiveRuntime:
             # notification subscriptions until either side disconnects.
             await disconnect_event.wait()
 
+        except asyncio.CancelledError:
+            session_failed = True
+            self._event_logger.record("session.cancelled")
+            raise
+
         except Exception as error:
+            session_failed = True
+            self._event_logger.record(
+                "session.failed",
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
             self._updates.put(
                 RuntimeFailed(
                     operation="connect",
@@ -645,6 +748,12 @@ class LiveRuntime:
                 try:
                     await client.disconnect()
                 except Exception as error:
+                    session_failed = True
+                    self._event_logger.record(
+                        "session.failed",
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                    )
                     self._updates.put(
                         RuntimeFailed(
                             operation="disconnect",
@@ -653,12 +762,29 @@ class LiveRuntime:
                         )
                     )
 
+            if connected:
+                self._event_logger.record(
+                    "connection.closed",
+                    device_name=(
+                        client.device.name
+                        if client is not None and client.device.name
+                        else "Unknown"
+                    ),
+                    device_address=device_address,
+                )
+
             # Stop capture after BLE cleanup so its PCAP includes the end of
             # the connection instead of being truncated before disconnection.
             if capture_started and nordic_capture is not None:
                 try:
                     await nordic_capture.stop()
                 except Exception as error:
+                    session_failed = True
+                    self._event_logger.record(
+                        "session.failed",
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                    )
                     self._updates.put(
                         RuntimeFailed(
                             operation="capture",
@@ -667,6 +793,12 @@ class LiveRuntime:
                         )
                     )
                 else:
+                    self._event_logger.record(
+                        "capture.completed",
+                        capture_type="nordic_ble",
+                        device_address=device_address,
+                        output_path=str(nordic_capture.output_path),
+                    )
                     self._updates.put(
                         CaptureCompleted(
                             device_address=device_address,
@@ -680,6 +812,11 @@ class LiveRuntime:
             # BlueZ removes subscriptions when the connection closes; clear our
             # matching state so the next device can create a new subscription.
             self._notification_target = None
+
+            if not session_failed:
+                self._event_logger.record("session.completed")
+
+            self._event_logger = EventLogger(None)
 
             self._updates.put(
                 ConnectionClosed(
