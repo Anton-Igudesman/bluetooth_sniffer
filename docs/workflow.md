@@ -13,10 +13,12 @@ From the Waveshare interface, the operator can:
 - start the Nordic sniffer before opening the BLE connection; and
 - stop and finalize the PCAP after disconnecting.
 
-The touchscreen currently saves the passive PCAP, but it does not yet create
-the application event log or automatically correlate the completed session.
-The terminal workflow already contains the event logging and correlation
-building blocks needed for that work.
+The touchscreen now reserves a session bundle, records the application event
+log, finalizes the passive PCAP, and automatically correlates a successfully
+completed capture. The generated report is loaded into the existing
+touchscreen report viewer after disconnection. End-to-end verification on the
+Pi with the Nordic dongle remains before this milestone can be considered
+release-ready.
 
 ## Overall demo narrative
 
@@ -64,12 +66,14 @@ overwrite an earlier session.
 
 ### Implementation status
 
-The first development slice now reserves the session directory atomically and
-records the touchscreen lifecycle in `session.jsonl`. Successful reads,
-writes, subscription changes, notifications, connection state, capture state,
-and UUID-to-handle mappings use the existing terminal event schema. Session
-failures and cancellation are also retained. Automatic correlation and report
-loading remain the next slice.
+The touchscreen reserves the session directory atomically and records its
+lifecycle in `session.jsonl`. Successful reads, writes, subscription changes,
+notifications, connection state, capture state, and UUID-to-handle mappings
+use the existing terminal event schema. Session failures and cancellation are
+also retained. After capture finalization, the runtime writes
+`correlation.json`; the dashboard validates that report and opens its summary
+after disconnection. Analysis failures preserve the completed session
+artifacts and remain distinct from BLE connection failures.
 
 ### Step 1: create and populate the event log
 

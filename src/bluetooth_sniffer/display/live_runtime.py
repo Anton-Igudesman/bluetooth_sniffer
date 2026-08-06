@@ -13,6 +13,8 @@ from ..scanner import BluetoothScanner, ScanResults
 from ..gatt_client import GattClient, GattServiceSnapshot
 from ..nordic_capture import NordicCapture
 from ..event_log import EventLogger
+from ..correlation import DEFAULT_CORRELATION_WINDOW, analyze_session
+from ..reporting import write_correlation_report
 
 @dataclass(frozen=True)
 class LiveDevice:
@@ -38,6 +40,14 @@ class CaptureStarted:
 class CaptureCompleted:
     device_address: str
     output_path: Path
+
+@dataclass(frozen=True)
+class AnalysisCompleted:
+    event_log_path: Path
+    pcap_path: Path
+    report_path: Path
+    matched_count: int
+    event_count: int
    
 @dataclass(frozen=True)
 class ConnectionStarted:
@@ -94,6 +104,7 @@ class RuntimeFailed:
         "subscribe",
         "unsubscribe",
         "capture",
+        "analysis",
     ]
     error_type: str
     message: str
@@ -103,6 +114,7 @@ type LiveUpdate = (
     | ScanCompleted
     | CaptureStarted
     | CaptureCompleted
+    | AnalysisCompleted
     | ConnectionStarted
     | GattDiscovered
     | CharacteristicRead
@@ -264,6 +276,7 @@ class LiveRuntime:
         capture_port: str | None = None,
         capture_output_path: Path | None = None,
         event_log_path: Path | None = None,
+        correlation_output_path: Path | None = None,
     ) -> None:
         device_address = device_address.strip()
 
@@ -276,14 +289,15 @@ class LiveRuntime:
             capture_port,
             capture_output_path,
             event_log_path,
+            correlation_output_path,
         )
 
         if any(value is not None for value in capture_values) and not all(
             value is not None for value in capture_values
         ):
             raise ValueError(
-                "Capture port, output path, and event log must be supplied "
-                "together"
+                "Capture port, output path, event log, and correlation report "
+                "must be supplied together"
             )
 
         loop = self._loop
@@ -308,7 +322,8 @@ class LiveRuntime:
                 capture_port=capture_port,
                 capture_output_path=capture_output_path,
                 event_log_path=event_log_path,
-                ),
+                correlation_output_path=correlation_output_path,
+            ),
             loop,
         )
 
@@ -596,6 +611,65 @@ class LiveRuntime:
             )
         )
     
+    async def _analyze_completed_session(
+        self,
+        event_log_path: Path,
+        pcap_path: Path,
+        report_path: Path,
+    ) -> None:
+        # The Nordic process has already exited, so TShark cannot observe a
+        # partially written PCAP while it decodes this session.
+        try:
+            correlations = await analyze_session(
+                event_log_path,
+                pcap_path,
+            )
+
+            window_seconds = DEFAULT_CORRELATION_WINDOW.total_seconds()
+            write_correlation_report(
+                correlations,
+                event_log_path,
+                pcap_path,
+                report_path,
+                window_seconds,
+            )
+        except Exception as error:
+            # Analysis failure must not hide or repeat a successful BLE operation.
+            self._event_logger.record(
+                "analysis.failed",
+                error_type=type(error).__name__,
+                error_message=str(error),
+                pcap_path=str(pcap_path),
+            )
+            self._updates.put(
+                RuntimeFailed(
+                    operation="analysis",
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
+            )
+            return
+
+        matched_count = sum(
+            correlation.matched for correlation in correlations
+        )
+
+        self._event_logger.record(
+            "analysis.completed",
+            output_path=str(report_path),
+            matched_count=matched_count,
+            event_count=len(correlations),
+        )
+        self._updates.put(
+            AnalysisCompleted(
+                event_log_path=event_log_path,
+                pcap_path=pcap_path,
+                report_path=report_path,
+                matched_count=matched_count,
+                event_count=len(correlations),
+            )
+        )
+
     async def _connection_session(
         self,
         device_address: str,
@@ -603,6 +677,7 @@ class LiveRuntime:
         capture_port: str | None,
         capture_output_path: Path | None,
         event_log_path: Path | None,
+        correlation_output_path: Path | None,
     ) -> None:
         self._event_logger = EventLogger(event_log_path)
         self._event_logger.record(
@@ -815,6 +890,19 @@ class LiveRuntime:
 
             if not session_failed:
                 self._event_logger.record("session.completed")
+
+                if (
+                    event_log_path is not None
+                    and capture_output_path is not None
+                    and correlation_output_path is not None
+                ):
+                    # Correlation begins only after capture.completed and
+                    # session.completed have been written.
+                    await self._analyze_completed_session(
+                        event_log_path,
+                        capture_output_path,
+                        correlation_output_path,
+                    )
 
             self._event_logger = EventLogger(None)
 

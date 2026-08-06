@@ -15,6 +15,7 @@ from ..gatt_client import (
 )
 
 from .live_runtime import (
+    AnalysisCompleted,
     CharacteristicRead,
     CharacteristicWritten,
     CharacteristicValueReceived,
@@ -107,6 +108,12 @@ class CorrelationDashboard:
         # that has been finalized and is safe to inspect with Wireshark.
         self.active_capture_path: Path | None = None
         self.completed_capture_path: Path | None = None
+
+        # Retain completed analysis state until the connection closes and the
+        # touchscreen can transition safely from the live session to its report.
+        self.completed_report_path: Path | None = None
+        self.completed_analysis_counts: tuple[int, int] | None = None
+        self.analysis_failure_text: str | None = None
         
         self.live_runtime = LiveRuntime()
         self.live_runtime_started = False
@@ -436,6 +443,7 @@ class CorrelationDashboard:
         capture_port: str | None = None
         capture_output_path: Path | None = None
         event_log_path: Path | None = None
+        correlation_output_path: Path | None = None
 
         if with_capture:
             if (
@@ -462,11 +470,16 @@ class CorrelationDashboard:
 
             capture_output_path = session_paths.pcap
             event_log_path = session_paths.event_log
+            correlation_output_path = session_paths.correlation_report
             capture_port = self.nordic_port
 
         self.active_capture_path = None
         self.completed_capture_path = None
+        self.completed_report_path = None
+        self.completed_analysis_counts = None
+        self.analysis_failure_text = None
         self.selected_live_device = device
+
         self.gatt_services = ()
         self.connection_status_text = (
             "STARTING PASSIVE CAPTURE"
@@ -485,6 +498,7 @@ class CorrelationDashboard:
                 capture_port=capture_port,
                 capture_output_path=capture_output_path,
                 event_log_path=event_log_path,
+                correlation_output_path=correlation_output_path,
             )
         except (RuntimeError, ValueError) as error:
             self.connection_status_text = f"CONNECTION FAILED: {error}"
@@ -1692,6 +1706,38 @@ class CorrelationDashboard:
             elif isinstance(update, CaptureCompleted):
                 self.active_capture_path = None
                 self.completed_capture_path = update.output_path
+
+            elif isinstance(update, AnalysisCompleted):
+                try:
+                    completed_report = load_correlation_report(
+                        update.report_path
+                    )
+                except (OSError, ValueError) as error:
+                    # Keep the finalized capture available even if its newly
+                    # written report cannot be validated for touchscreen use.
+                    self.completed_report_path = None
+                    self.completed_analysis_counts = None
+                    self.analysis_failure_text = (
+                        f"REPORT LOAD FAILED: {type(error).__name__}: {error}"
+                    )
+                    self.connection_status_text = self.analysis_failure_text
+                    self.connection_status_color = WARNING_COLOR
+                    self._render_connection_status()
+                else:
+                    self.report = completed_report
+                    self.summary = completed_report.summary
+                    self.completed_report_path = update.report_path
+                    self.completed_analysis_counts = (
+                        update.matched_count,
+                        update.event_count,
+                    )
+                    self.analysis_failure_text = None
+                    self.connection_status_text = (
+                        f"ANALYSIS COMPLETE: {update.matched_count} / "
+                        f"{update.event_count} EVENT(S) MATCHED"
+                    )
+                    self.connection_status_color = SUCCESS_COLOR
+                    self._render_connection_status()
             
             elif isinstance(update, CharacteristicRead):
                 service = self.selected_gatt_service
@@ -1801,6 +1847,19 @@ class CorrelationDashboard:
                     self.connection_status_color = WARNING_COLOR
                     self.connection_failed = True
                     self._render_connection_status()
+                elif update.operation == "analysis":
+                    # Correlation runs after the BLE session and capture have
+                    # completed, so its failure must not discard those artifacts
+                    # or misreport the device connection as unsuccessful.
+                    self.completed_report_path = None
+                    self.completed_analysis_counts = None
+                    self.analysis_failure_text = (
+                        "CAPTURE SAVED — ANALYSIS FAILED: "
+                        f"{update.error_type}: {update.message}"
+                    )
+                    self.connection_status_text = self.analysis_failure_text
+                    self.connection_status_color = WARNING_COLOR
+                    self._render_connection_status()
                 elif update.operation == "read":
                     # A rejected attribute read does not necessarily mean the
                     # BLE connection failed, so keep the GATT browser available.
@@ -1863,7 +1922,13 @@ class CorrelationDashboard:
                     # A disconnected device may have changed address or stopped
                     # advertising, so do not offer connection from the old scan.
                     self.live_devices = ()
-                    if self.completed_capture_path is not None:
+                    if self.completed_report_path is not None:
+                        self._build_summary()
+                    elif self.analysis_failure_text is not None:
+                        self.live_status_text = self.analysis_failure_text
+                        self.live_status_color = WARNING_COLOR
+                        self._build_live_scan()
+                    elif self.completed_capture_path is not None:
                         self.live_status_text = (
                             "CAPTURE SAVED — "
                             f"{self.completed_capture_path.name}"
